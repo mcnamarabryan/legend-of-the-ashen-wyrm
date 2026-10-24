@@ -409,8 +409,16 @@ describe('the sound catalogue', () => {
   it('sends the atmospheric sounds to the room and keeps keys dry', async () => {
     const { DESIGNS } = await import('../src/audio/catalogue');
 
-    const send = (name: keyof typeof DESIGNS) =>
-      Math.max(...DESIGNS[name].voices.map((v) => v.send ?? 0));
+    /*
+     * Every voice in a design, including the alternate stacks. A keyboard that
+     * only sounded dry in its primary stack would revert to a cathedral on two
+     * keystrokes out of three — which is the kind of bug a partial check misses.
+     */
+    const send = (name: keyof typeof DESIGNS) => {
+      const design = DESIGNS[name];
+      const all = [design.voices, ...(design.variants ?? [])].flat();
+      return Math.max(0, ...all.map((v) => v.send ?? 0));
+    };
 
     /* A keyclick in a cathedral is wrong; a death rattle in a vacuum is worse. */
     expect(send('key')).toBe(0);
@@ -502,16 +510,22 @@ describe('the renderer', () => {
 
     const bus = buildBus(ctx as never, ctx.destination as never);
 
-    gainSpies.length = 0;
-    /* The keyclick is deliberately bone dry. A keyboard in a cathedral is
-       wrong, and this is the assertion that keeps it that way. */
-    renderSound(bus, DESIGNS.key, 0);
+    /*
+     * Sample repeatedly, because the keyboard picks one of three voice stacks at
+     * random per firing. Checking once would only prove that *one* stack is dry,
+     * and would pass or fail depending on which stack happened to come up.
+     */
+    for (let i = 0; i < 40; i += 1) {
+      gainSpies.length = 0;
+      renderSound(bus, DESIGNS.key, 0);
 
-    const feedsReverb = gainSpies.some((gain) =>
-      gain.connect.mock.calls.some((call) => call[0] === bus.reverb),
-    );
+      const feedsReverb = gainSpies.some((gain) =>
+        gain.connect.mock.calls.some((call) => call[0] === bus.reverb),
+      );
 
-    expect(feedsReverb).toBe(false);
+      /* The board is under your hands, not across a room. */
+      expect(feedsReverb, `keystroke ${i} fed the reverb`).toBe(false);
+    }
   });
 
   it('is silent when disabled', async () => {

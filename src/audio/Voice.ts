@@ -62,6 +62,17 @@ export interface Voice {
   /** Offset from the sound's start, in seconds. Can be negative-free only. */
   at: number;
 
+  /**
+   * Random ± seconds applied to `at`, per firing.
+   *
+   * This exists for the keyboard. A keyswitch produces a press and a release, and
+   * the gap between them is how long a human held the key — which varies by tens
+   * of milliseconds every single time. Without jitter on that gap, the pair is
+   * mechanically identical on every keystroke and the ear hears a drum machine
+   * rather than a keyboard.
+   */
+  atJitter?: number;
+
   /** Fundamental in Hz. `0` means noise-only. */
   freq: number;
   /** Sweep target in Hz. Omitted for a steady pitch. */
@@ -129,6 +140,34 @@ export interface SoundDesign {
   throttleMs?: number;
   /** Random pitch drift in cents, so repeats are never identical. */
   jitter?: number;
+  /**
+   * Alternate voice stacks, chosen at random per firing.
+   *
+   * Pitch jitter makes the *same* sound slightly different each time; this makes
+   * it a *different sound*. That is the distinction between a keyboard and a
+   * synthesiser playing one note — a real board varies in the case, the plate,
+   * and which finger landed on which cap, and no amount of detuning imitates it.
+   *
+   * When present, one of `voices` or one `variants` entry is chosen each firing.
+   */
+  variants?: Voice[][];
+  /**
+   * ± fraction applied to every voice's gain, per firing.
+   *
+   * Velocity. Two keystrokes are never the same force, and a keyboard where
+   * every key is hit at exactly the same volume reads as a click track.
+   */
+  gainJitter?: number;
+}
+
+/**
+ * Every voice stack a design can produce.
+ *
+ * A helper rather than a convention, so "pick one at random" is defined in one
+ * place and the renderer and the tests cannot disagree about it.
+ */
+export function stacksFor(design: SoundDesign): Voice[][] {
+  return [design.voices, ...(design.variants ?? [])].filter((s) => s.length > 0);
 }
 
 /** The quietest level an exponential ramp may target (it cannot reach 0). */

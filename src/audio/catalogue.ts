@@ -31,6 +31,7 @@
  */
 
 import type { SoundDesign, SoundName } from './Voice';
+import { KEY } from './keyboard';
 
 export const DESIGNS: Record<SoundName, SoundDesign> = {
   /* ------------------------------------------------------------------ */
@@ -38,38 +39,11 @@ export const DESIGNS: Record<SoundName, SoundDesign> = {
   /* ------------------------------------------------------------------ */
 
   /**
-   * The most-heard sound in the game, so it gets the most care.
-   *
-   * A real key mechanism is two events: a switch closing (bright, tiny) and the
-   * key bottoming out (dull, lower). Modelling both is what makes it read as a
-   * keyboard rather than a beep. Throttled, because mashing a key should not
-   * stack forty of these into a buzz.
+   * The most-heard sound in the game, so it lives in its own module and gets the
+   * most care. See `keyboard.ts` for the four-event model — press, bottom-out,
+   * plate ring, release — and why the release gap has to be jittered.
    */
-  key: {
-    trim: 0.9,
-    throttleMs: 18,
-    jitter: 26,
-    voices: [
-      {
-        at: 0,
-        freq: 0,
-        dur: 0.016,
-        gain: 0.026,
-        noise: 1,
-        noiseFilter: { type: 'highpass', freq: 2600, Q: 0.7 },
-      },
-      {
-        at: 0,
-        freq: 1150,
-        to: 760,
-        dur: 0.026,
-        wave: 'pulse25',
-        gain: 0.042,
-        attack: 0.0015,
-        falloff: 2.6,
-      },
-    ],
-  },
+  key: KEY,
 
   /** Committing: a two-step rise, with just enough room to feel deliberate. */
   select: {

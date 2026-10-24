@@ -32,7 +32,7 @@
  * whole duration with a curve, which is what a struck object actually does.
  */
 
-import { SILENCE, type SoundDesign, type Voice } from './Voice';
+import { SILENCE, stacksFor, type SoundDesign, type Voice } from './Voice';
 import { harmonicsFor, makeWave, WAVE_FALLBACK } from './waves';
 
 export interface RenderContext {
@@ -104,8 +104,27 @@ export function renderSound(
   const trim = design.trim ?? 1;
   const drift = options.detune ?? 0;
 
-  for (const voice of design.voices) {
-    renderVoice(bus, voice, when, trim, drift, options);
+  /*
+   * Choose a stack.
+   *
+   * A design may offer alternate voice stacks, and picking one at random is what
+   * makes a keystroke sound like a keypress on a real board rather than one
+   * sample retriggered. `stacksFor` guarantees at least one entry.
+   */
+  const stacks = stacksFor(design);
+  const voices = stacks.length > 1 ? stacks[Math.floor(Math.random() * stacks.length)] : design.voices;
+
+  /*
+   * Velocity. Each firing gets a small gain multiplier, so no two keystrokes land
+   * at exactly the same volume — which is what a hand does and a sequencer does
+   * not.
+   */
+  const velocity = design.gainJitter
+    ? 1 + (Math.random() * 2 - 1) * design.gainJitter
+    : 1;
+
+  for (const voice of voices) {
+    renderVoice(bus, voice, when, trim * velocity, drift, options);
   }
 }
 
@@ -119,7 +138,18 @@ function renderVoice(
 ): void {
   const { ctx } = bus;
 
-  const start = when + Math.max(0, voice.at);
+  /*
+   * Placement, with optional jitter.
+   *
+   * `atJitter` is what makes the press-release gap of a keystroke vary the way a
+   * hand does. The offset is applied here — once — so `end` and every scheduled
+   * param stay consistent with the actual start.
+   */
+  const drift0 = voice.atJitter
+    ? voice.at + (Math.random() * 2 - 1) * voice.atJitter
+    : voice.at;
+
+  const start = when + Math.max(0, drift0);
   const end = start + Math.max(0.01, voice.dur);
 
   const attack = Math.max(0.0005, voice.attack ?? 0.006);

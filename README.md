@@ -34,6 +34,8 @@ Keyboard only. Any keypress skips the typewriter; the next keypress acts.
 [D] Wyrm      [Q] Quit      [?] Help      [ESC] Back
 ```
 
+Typing is a mechanical keyboard, not a beep — see §Audio.
+
 ---
 
 ## What this is
@@ -77,6 +79,7 @@ src/                      THE CLIENT — presentation only
     handshake.ts          the modem, as a timeline
     scenes.ts             the five room palettes, as data
     ambience.ts           renders a scene + crossfades between them
+    keyboard.ts           the mechanical keyclick, in four events
     SoundEngine.ts        context, throttling, volume, ambience
     cues.ts               server prose → which sound
   ui/                     Crt, Header, TerminalLog, Markup, screens/
@@ -319,6 +322,50 @@ Four properties, in order of how much they do:
 
 It is switchable separately from the effects, because some people want the
 keyclicks and not the drone.
+
+### The keyboard
+
+The keyclick is the most-heard sound in the game — tens of thousands of times in a
+session — so it lives in its own module and gets its own suite.
+
+**A mechanical key is four events, not one**, and imitations usually model only
+the first:
+
+1. **The press** — the switch contact. A dry high transient, milliseconds long.
+2. **The bottom-out** — the cap hitting the plate, 152 Hz falling to 94. This is
+   the *clack* people actually mean, and it is a mass event, not a click.
+3. **The plate ring** — the case resonating at ~620 Hz for 65 ms. The most
+   under-modelled layer, and the one that gives the board a *body*. A click has no
+   case; a keyboard does.
+4. **The release** — higher and quieter, arriving at a gap set by how long the key
+   was held.
+
+**The gap is the point.** `atJitter` on the release voices varies the
+press-to-release interval by ±22 ms every keystroke, because that interval *is*
+how long a human held the key. Without it the pair is mechanically identical every
+time, and the ear identifies the sample within about four keys.
+
+**Three axes of variation**, so consecutive keystrokes are different *objects*
+rather than detuned copies of one object:
+
+| Axis | Mechanism | Effect |
+|---|---|---|
+| Pitch | `jitter: 30` cents | a slightly different cap |
+| Velocity | `gainJitter: 0.18` | a slightly different force |
+| Character | two alternate stacks | a slightly different *keyboard* |
+
+The alternates are a heavier cap (lower ring, louder bottom-out) and a lighter one
+(brighter transient, thinner body). Pitch jitter alone cannot do this — it changes
+the note without changing the object.
+
+**Bone dry.** The design carries no reverb send anywhere, and two tests enforce
+that across *every* stack. A wet keyclick reads as someone else typing in another
+building; the board is thirty centimetres from your ears. The body comes from
+frequency and decay, not from space.
+
+**Throttled at 18 ms** so held-key repeat rolls rather than stacking into a buzz,
+and budgeted well under the combat sounds so typing through it for an hour is
+comfortable.
 
 ### Starting kits are per class
 
