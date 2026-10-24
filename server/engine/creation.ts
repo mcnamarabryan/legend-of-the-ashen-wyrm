@@ -51,6 +51,10 @@ export function buildStartingCharacter(input: CreateInput): Character {
     if (level >= 8) known.push('drain');
   }
 
+  /* The class decides the kit. A magician opening with a dagger is a warrior
+     with worse numbers; a wand and robes make the choice legible on turn one. */
+  const kit = gameRules.start.kits[input.cls] ?? gameRules.start.kits.warrior;
+
   const char: Character = {
     name: input.name.trim(),
     sex: input.sex,
@@ -72,8 +76,8 @@ export function buildStartingCharacter(input: CreateInput): Character {
     banked: 0,
     gems: gameRules.start.gems,
 
-    weaponId: gameRules.start.weaponId,
-    armorId: gameRules.start.armorId,
+    weaponId: kit.weaponId,
+    armorId: kit.armorId,
 
     turnsRemaining: gameRules.turnsPerDay,
     lastTurnResetDay: dayKey(),

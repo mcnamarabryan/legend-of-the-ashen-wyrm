@@ -77,9 +77,15 @@ export interface SaleResult {
 }
 
 /**
- * Sell the currently equipped weapon or armor. Selling the starting kit is
- * allowed; selling your only weapon leaves you with the Rusty Dagger, which
- * is the design's way of saying no.
+ * Sell the currently equipped weapon or armor.
+ *
+ * You cannot sell your class's starting kit — that is your last resort, and with
+ * a buyback of 0 gold there is nothing to gain by it anyway. Everything you
+ * bought is fair game, and selling it drops you back to your starter.
+ *
+ * The fallback is per class. It used to be a hardcoded 'rusty-dagger'/'rags',
+ * which would have quietly turned a magician's wand into a dagger the moment
+ * they sold a sword — a class change nobody asked for.
  */
 export function sellEquipped(c: Character, kind: 'weapon' | 'armor'): SaleResult {
   const id = kind === 'weapon' ? c.weaponId : c.armorId;
@@ -89,10 +95,11 @@ export function sellEquipped(c: Character, kind: 'weapon' | 'armor'): SaleResult
     return { character: c, ok: false, line: { text: msg.shop.cannotSellLast, tone: 'dim' } };
   }
 
+  const kit = gameRules.start.kits[c.class] ?? gameRules.start.kits.warrior;
   const gold = buybackValue(item, gameRules.shop.buybackPct);
   const next: Character = { ...c, gold: c.gold + gold };
-  if (kind === 'weapon') next.weaponId = 'rusty-dagger';
-  else next.armorId = 'rags';
+  if (kind === 'weapon') next.weaponId = kit.weaponId;
+  else next.armorId = kit.armorId;
 
   return {
     character: next,

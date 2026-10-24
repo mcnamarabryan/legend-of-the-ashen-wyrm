@@ -13,6 +13,15 @@ export interface Item {
   desc: string;
   /** Starting kit — never appears in the shop's buy list. */
   starting?: boolean;
+  /**
+   * Which classes begin with this item.
+   *
+   * A boolean `starting` was not enough once the kit split by class: the shop
+   * hid every `starting` item, which is right, but `sellEquipped` also refused
+   * to sell anything `starting`, which left a magician unable to sell the wand
+   * they had outgrown. Class ownership makes both questions answerable.
+   */
+  startingFor?: string[];
   /** Sold by the forest peddler only. */
   cursed?: boolean;
   /** Defense penalty applied while equipped (the cursed blade). */
@@ -29,6 +38,27 @@ export const weapons: Item[] = [
     gems: 0,
     desc: 'The blade turns in your grip. It is not a good blade.',
     starting: true,
+    startingFor: ['warrior', 'thief'],
+  },
+  {
+    /**
+     * The magician's opening weapon.
+     *
+     * Weaker than the dagger on purpose. A wand that hit as hard as a blade
+     * would make the class a free upgrade; a wand that hits softer makes the
+     * first Short Sword feel like a real purchase. The compensation is Spark,
+     * which ignores armor entirely and is why a magician can beat things that
+     * a warrior of the same level has to grind down.
+     */
+    id: 'weak-wand',
+    name: 'Weak Wand',
+    kind: 'weapon',
+    power: 2,
+    price: 0,
+    gems: 0,
+    desc: 'A length of ash with a chip of quartz in the tip. It hums. Barely.',
+    starting: true,
+    startingFor: ['magician'],
   },
   {
     id: 'short-sword',
@@ -107,6 +137,25 @@ export const armors: Item[] = [
     gems: 0,
     desc: 'They are technically clothing. They are technically armor.',
     starting: true,
+    startingFor: ['warrior', 'thief'],
+  },
+  {
+    /**
+     * The magician's opening armor.
+     *
+     * Marginally better than rags, which is the point: cloth does not stop a
+     * blade, it stops you being naked. A magician survives with Ward and by
+     * killing things before they close, not by padding.
+     */
+    id: 'cloth-robes',
+    name: 'Cloth Robes',
+    kind: 'armor',
+    power: 2,
+    price: 0,
+    gems: 0,
+    desc: 'Dyed a colour that was fashionable forty years ago. Smells of ink.',
+    starting: true,
+    startingFor: ['magician'],
   },
   {
     id: 'leather',

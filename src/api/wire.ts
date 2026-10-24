@@ -44,6 +44,29 @@ export interface WirePrompt {
   hint?: string;
 }
 
+/**
+ * LIVE TEXT ENTRY.
+ *
+ * Creation's name step is the one place the player types free text, and it is
+ * the one place a keystroke produces no narrative. Without an echo the screen
+ * is simply blank while you type — you cannot see what you are entering, which
+ * makes backspacing to fix a typo a guess.
+ *
+ * The echo travels on the wire because the name is server-owned state: the
+ * server is the thing accumulating the keystrokes, so the server is the thing
+ * that knows what has been typed. The client renders `value` verbatim and never
+ * buffers input of its own — keeping the single-mutation-path rule intact.
+ */
+export interface WireEntry {
+  /** The question being answered, e.g. WHAT IS YOUR NAME? */
+  label: string;
+  /** What has been typed so far. May be empty. */
+  value: string;
+  hint?: string;
+  /** Character limit, so the client can show a counter. */
+  max?: number;
+}
+
 /** One rendered screen. This is the entire game as far as the client knows. */
 export interface Screen {
   view: string;
@@ -52,6 +75,8 @@ export interface Screen {
   character: HeaderCharacter | null;
   prompt: WirePrompt | null;
   menu: MenuEntry[] | null;
+  /** Live text entry, or null when no field is being filled in. */
+  entry: WireEntry | null;
   slots: SlotSummary[];
   feed: string[];
 }

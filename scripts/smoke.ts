@@ -54,10 +54,24 @@ async function send(token: string, key: string): Promise<Screen> {
 async function main(): Promise<void> {
   console.log(`\nsmoke test against ${BASE}\n`);
 
-  /* The realm persists between runs, so a fixed name would be "taken" on the
-     second run and cascade into a dozen false failures. A unique name per run
-     keeps this test repeatable, which is the only way a smoke test is useful. */
-  const NAME = `Tes${Date.now().toString(36).slice(-6)}`;
+  /*
+   * A unique name per run. Two constraints bit us here already:
+   *
+   *  - The realm persists between runs, so a fixed name would be "taken" and
+   *    cascade into a dozen false failures. Hence the timestamp.
+   *  - `namePattern` is `/^[A-Za-z' -]+$/`, so NO DIGITS. `Date.now().toString(36)`
+   *    contains digits, which the server silently dropped — the character was
+   *    created as "Tes" and the name assertion failed for a reason that had
+   *    nothing to do with the thing under test.
+   *
+   * So: take a base36 timestamp, strip everything that is not a letter. It stays
+   * unique enough within a realm and always survives validation.
+   */
+  const stamp = Date.now()
+    .toString(36)
+    .replace(/[^a-z]/gi, '')
+    .slice(-6);
+  const NAME = `Tes${stamp || 'abcde'}`;
 
   /* ---- health ------------------------------------------------- */
   const health = await fetch(`${BASE}/api/health`);

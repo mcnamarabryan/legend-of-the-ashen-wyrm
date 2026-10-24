@@ -55,8 +55,26 @@ export const gameRules = {
     gems: 0,
     level: 1,
     xp: 0,
-    weaponId: 'rusty-dagger',
-    armorId: 'rags',
+    /**
+     * Starting kit, PER CLASS.
+     *
+     * A magician handed a rusty dagger is not a magician — it is a warrior with
+     * worse stats. The kit is what makes the class read as a choice on turn one
+     * rather than something you notice at level five when the spells arrive.
+     *
+     * The magician's wand is deliberately weak: 2 damage against the dagger's 3.
+     * It is a stick. That is the joke, and the compensation is that they open
+     * with Spark and can afford a real weapon sooner because they are not
+     * spending gold replacing a decent starting kit.
+     *
+     * Cloth is 2 armor, Rags is 1. Marginal on purpose: a magician should feel
+     * fragile, not merely start at a disadvantage.
+     */
+    kits: {
+      warrior: { weaponId: 'rusty-dagger', armorId: 'rags' },
+      magician: { weaponId: 'weak-wand', armorId: 'cloth-robes' },
+      thief: { weaponId: 'rusty-dagger', armorId: 'rags' },
+    } as Record<string, { weaponId: string; armorId: string }>,
   },
   baseStats: {
     warrior: { str: 12, def: 8, agi: 5, chm: 5, hp: 26 },

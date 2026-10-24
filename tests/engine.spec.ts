@@ -2,10 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { gameRules, levelForXp, toRoman, dayKey, daysBetween } from '../server/engine/rules';
 import { mulberry32, randInt } from '../server/engine/rng';
 import { maxHpForLevel, awardXp, xpToNext } from '../server/engine/progression';
-import { applyDeath, rolloverDay, bankDeposit, applyDailyInterest } from '../server/engine/economy';
+import { applyDeath, rolloverDay, bankDeposit, applyDailyInterest, sellEquipped } from '../server/engine/economy';
 import { buildStartingCharacter } from '../server/engine/creation';
 import { resolveFight, hitChance } from '../server/engine/combat';
 import { monstersForLevel, wyrm } from '../server/content/monsters';
+import { armorById, weaponById, shopArmors, shopWeapons } from '../server/content/items';
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
@@ -113,7 +114,7 @@ describe('character creation', () => {
     expect([t.str, t.def, t.agi, t.chm]).toEqual([8, 6, 11, 7]);
   });
 
-  it('starts with 50 gold, the rusty dagger, rags, and 10 turns', () => {
+  it('starts with 50 gold, the warrior kit, and 10 turns', () => {
     const c = hero();
     expect(c.gold).toBe(50);
     expect(c.gems).toBe(0);
@@ -122,6 +123,58 @@ describe('character creation', () => {
     expect(c.turnsRemaining).toBe(10);
     expect(c.level).toBe(1);
     expect(c.xp).toBe(0);
+  });
+
+  /*
+   * THE KIT IS PER CLASS.
+   *
+   * A magician handed a rusty dagger is a warrior with worse numbers — the class
+   * choice would not read as a choice until the spells arrived at level five.
+   * These assertions exist so a future refactor cannot quietly collapse the kits
+   * back into one.
+   */
+  it('gives a magician a wand and cloth, not a dagger and rags', () => {
+    const m = hero({ cls: 'magician', name: 'Mage' });
+    expect(m.weaponId).toBe('weak-wand');
+    expect(m.armorId).toBe('cloth-robes');
+  });
+
+  it('keeps the dagger for warriors and thieves', () => {
+    expect(hero({ cls: 'warrior' }).weaponId).toBe('rusty-dagger');
+    expect(hero({ cls: 'thief', name: 'Cutpurse' }).weaponId).toBe('rusty-dagger');
+    expect(hero({ cls: 'thief', name: 'Cutpurse' }).armorId).toBe('rags');
+  });
+
+  it('makes the wand weaker than the dagger and the robes worse than nothing', () => {
+    /* The wand is meant to be a stick. If it ever out-damages the dagger, the
+       magician has become a free upgrade rather than a trade-off. */
+    expect(weaponById('weak-wand').power).toBeLessThan(weaponById('rusty-dagger').power);
+    /* Robes beat rags — barely. A magician should feel fragile, not punished. */
+    expect(armorById('cloth-robes').power).toBeGreaterThan(armorById('rags').power);
+  });
+
+  it('never sells either starting kit in the shop', () => {
+    const weaponIds = shopWeapons().map((w) => w.id);
+    const armorIds = shopArmors().map((a) => a.id);
+
+    expect(weaponIds).not.toContain('weak-wand');
+    expect(weaponIds).not.toContain('rusty-dagger');
+    expect(armorIds).not.toContain('cloth-robes');
+    expect(armorIds).not.toContain('rags');
+  });
+
+  it('refuses to sell the starter but does sell an upgrade', () => {
+    const mage = { ...hero({ cls: 'magician', name: 'Mage' }), weaponId: 'short-sword' };
+
+    /* Selling the sword drops the magician back to a WAND, not a dagger —
+       the fallback is per class, and getting that wrong is a silent class change. */
+    const sold = sellEquipped(mage, 'weapon');
+    expect(sold.ok).toBe(true);
+    expect(sold.character.weaponId).toBe('weak-wand');
+
+    /* The starter itself is unsellable: there is nothing to fall back to. */
+    const refused = sellEquipped(sold.character, 'weapon');
+    expect(refused.ok).toBe(false);
   });
 
   it('magicians know Spark', () => {

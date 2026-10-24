@@ -39,6 +39,8 @@ const defaultSettings: Settings = {
   grain: true,
   curvature: true,
   sound: true,
+  volume: 0.8,
+  ambience: true,
   typewriterMs: 18,
   contrastBoost: false,
 };
@@ -66,7 +68,16 @@ export interface Game {
     dial(): void;
     /** Cancel a handshake that is still running. */
     hangUp(): void;
+    /** Set listening level, 0–1. */
+    setVolume(value: number): void;
   };
+  /**
+   * How long the modem handshake actually runs, in milliseconds.
+   *
+   * Comes from the engine rather than a constant in the shell, so the boot
+   * screen cannot claim the carrier is up while the modem is still talking.
+   */
+  handshakeMs: number;
 }
 
 export function useGame(): Game {
@@ -83,6 +94,16 @@ export function useGame(): Game {
      replays a cue for a line the player has heard. */
   const scoredId = useRef(0);
   const hangUpRef = useRef<(() => void) | null>(null);
+
+  /**
+   * How long the modem actually runs, reported by the engine once it schedules.
+   *
+   * The shell waits on this instead of a hand-copied constant (it used to be a
+   * literal `5900` in App.tsx, which had to be kept in sync by hand with the
+   * timeline in the engine — a coordination bug waiting to happen). Seeded with
+   * a sane value so the boot screen behaves before the first dial.
+   */
+  const [handshakeMs, setHandshakeMs] = useState(6700);
 
   useEffect(() => {
     if (typeof window === 'undefined' || !window.matchMedia) return;
@@ -101,10 +122,12 @@ export function useGame(): Game {
     }
   }, [settings]);
 
-  /* Keep the engine's mute state in sync with the setting. */
+  /* Keep the engine's mute state, listening level and ambience in sync. */
   useEffect(() => {
     sound.setEnabled(settings.sound);
-  }, [settings.sound]);
+    sound.setVolume(settings.volume);
+    sound.setAmbienceEnabled(settings.ambience);
+  }, [settings.sound, settings.volume, settings.ambience]);
 
   /* Release the audio context if the app unmounts. */
   useEffect(() => {
@@ -239,16 +262,29 @@ export function useGame(): Game {
          */
         sound.setEnabled(true);
         hangUpRef.current?.();
-        hangUpRef.current = sound.handshake();
+        const handle = sound.handshake();
+        hangUpRef.current = handle;
+
+        /*
+         * Record what the engine actually scheduled. The boot screen waits on
+         * this, so the two can never drift apart and the carrier line cannot
+         * appear while the modem is still talking.
+         */
+        if (handle.duration > 0) setHandshakeMs(handle.duration * 1000);
       },
 
       hangUp: () => {
         hangUpRef.current?.();
         hangUpRef.current = null;
       },
+
+      setVolume: (value: number) => {
+        sound.setVolume(value);
+        setSettings((s) => ({ ...s, volume: value }));
+      },
     }),
     [connect],
   );
 
-  return { state, settings, reducedMotion, key, actions };
+  return { state, settings, reducedMotion, key, actions, handshakeMs };
 }

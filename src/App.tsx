@@ -6,6 +6,8 @@ import { TerminalLog } from './ui/TerminalLog';
 import { Boot, type BootPhase } from './ui/screens/Boot';
 import { Title } from './ui/screens/Title';
 import { SettingsPanel } from './ui/screens/Settings';
+import { EntryField } from './ui/EntryField';
+import { sound } from './audio/SoundEngine';
 import type { MenuEntry, WirePrompt } from './api/wire';
 
 /**
@@ -23,17 +25,21 @@ import type { MenuEntry, WirePrompt } from './api/wire';
  */
 
 /**
- * How long the modem handshake runs before the carrier counts as established.
+ * THE MODEM PATH.
  *
- * This MUST stay in step with the timeline in `SoundEngine.handshake()`. Too
- * short and the screen claims CARRIER ESTABLISHED while the modem is still
- * screeching; too long and the player waits in silence after the noise ends.
- * About 200ms of slack lets the final CRT thunk land first.
+ * How long the handshake runs is no longer declared here. `useGame` reports the
+ * duration the engine actually scheduled, so the boot screen waits on the truth
+ * rather than on a number copied out of another file.
+ *
+ * That used to be `const HANDSHAKE_MS = 5900`, with a comment asking the next
+ * developer to keep it in step with the timeline in `SoundEngine.handshake()`.
+ * Two numbers, two files, nothing enforcing agreement — and the failure mode is
+ * subtle: claim the carrier is up 200 ms early and the player hears the modem
+ * talking over the menu, which reads as a bug in the game rather than a typo in
+ * a constant. It is now derived, so it cannot drift.
  */
-const HANDSHAKE_MS = 5900;
-
 export default function App() {
-  const { state, settings, key, reducedMotion, actions } = useGame();
+  const { state, settings, key, reducedMotion, actions, handshakeMs } = useGame();
   const [skipToken, setSkipToken] = useState(0);
   const [typing, setTyping] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -58,6 +64,35 @@ export default function App() {
 
   /* Follow the newest line. */
   const bodyRef = useRef<HTMLDivElement | null>(null);
+
+  /**
+   * Keep the ambience in step with where the player is.
+   *
+   * TWO RULES, and the boundary between them is the whole point:
+   *
+   *  1. **Before connection, the room is a machine.** The player is standing in
+   *     a maintenance room beside a terminal that is doing something — ticks,
+   *     whirrs, a drive spinning up. That palette is deliberately mechanical and
+   *     periodic, and it is *unlike* the forest on purpose: the moment the modem
+   *     connects, the shift from a cold room to living wind does the work a
+   *     paragraph of prose would otherwise have to do.
+   *
+   *  2. **After connection, the room is wherever they are.** Each location maps to
+   *     a scene and movement crossfades, so the inn, the street, the forest and
+   *     the mountain are four different rooms rather than one bed with different
+   *     text over it.
+   *
+   * The dialling phase stays in the machine room: the modem is an object in that
+   * room, and the world opens when the *carrier settles*, not when the call
+   * starts.
+   */
+  useEffect(() => {
+    if (!bootDone) {
+      sound.setAmbienceScene('machine');
+      return;
+    }
+    sound.setLocation(state.view);
+  }, [bootDone, state.view]);
 
   /**
    * Keep the narrative pinned to the bottom.
@@ -134,8 +169,8 @@ export default function App() {
     }
 
     if (carrierTimer.current !== null) window.clearTimeout(carrierTimer.current);
-    carrierTimer.current = window.setTimeout(() => setBootPhase('connected'), HANDSHAKE_MS);
-  }, [actions, reducedMotion, settings.sound]);
+    carrierTimer.current = window.setTimeout(() => setBootPhase('connected'), handshakeMs);
+  }, [actions, reducedMotion, settings.sound, handshakeMs]);
 
   /** Leave the boot screen, hanging up if the modem is still talking. */
   const enterRealm = useCallback(() => {
@@ -165,8 +200,8 @@ export default function App() {
     }
 
     if (carrierTimer.current !== null) window.clearTimeout(carrierTimer.current);
-    carrierTimer.current = window.setTimeout(() => setBootPhase('connected'), HANDSHAKE_MS);
-  }, [actions, reducedMotion]);
+    carrierTimer.current = window.setTimeout(() => setBootPhase('connected'), handshakeMs);
+  }, [actions, reducedMotion, handshakeMs]);
 
   /** Decline: continue without audio, skipping a handshake nobody can hear. */
   const declineSound = useCallback(() => {
@@ -279,18 +314,43 @@ export default function App() {
           ) : state.connection === 'offline' ? (
             <CarrierLost error={state.error} onRetry={actions.retry} />
           ) : state.view === 'title' ? (
-            <Title character={state.character} slots={state.slots} />
-          ) : (
-            <TerminalLog
-              lines={state.log}
-              speed={speed}
-              skipToken={skipToken}
-              onTypingChange={onTypingChange}
-              /* The typewriter lives inside that component, so it is the only
-                 thing that can keep the view pinned as characters appear. */
-              scrollParent={bodyRef}
-              follow={stickToBottom}
+            /*
+             * `reducedMotion` is passed through because the title screen now
+             * reveals its sections in stages. A staged reveal is motion, and
+             * someone who asked for less of it should get the page complete.
+             */
+            <Title
+              character={state.character}
+              slots={state.slots}
+              reducedMotion={reducedMotion}
             />
+          ) : (
+            <>
+              <TerminalLog
+                lines={state.log}
+                speed={speed}
+                skipToken={skipToken}
+                onTypingChange={onTypingChange}
+                /* The typewriter lives inside that component, so it is the only
+                   thing that can keep the view pinned as characters appear. */
+                scrollParent={bodyRef}
+                follow={stickToBottom}
+              />
+
+              {/*
+                The live text field sits BELOW the log, not inside it.
+
+                A log entry is history: it scrolls away and is trimmed at a cap,
+                so putting the current name in there would mean it could be
+                evicted mid-typing — and the line would drift upward as new
+                narrative arrived, which is miserable when the caret is what your
+                eye is on.
+
+                `entry` is null for every screen that asks a single-key question,
+                which is every screen except the name prompt.
+              */}
+              {state.entry && <EntryField entry={state.entry} busy={state.busy} />}
+            </>
           )}
         </div>
 
@@ -309,6 +369,8 @@ export default function App() {
           settings={settings}
           reducedMotion={reducedMotion}
           onChange={actions.setSettings}
+          /* A volume step is meaningless without hearing it. */
+          onPreviewSound={() => sound.play('hit')}
           onClose={() => setShowSettings(false)}
         />
       )}

@@ -5,16 +5,49 @@ import type { Settings } from '../../api/types';
  *
  * Keyboard-first, but these are real focusable controls — the one place in the
  * game that takes a mouse, because accessibility beats purity. Escape closes.
+ *
+ * The volume control is a four-step cycle rather than a slider. A slider inside
+ * a keyboard-only terminal means arrow keys do double duty, and a terminal game
+ * has no business rendering a track and a thumb. Four perceptual steps cover the
+ * useful range and cycle with one key.
  */
 
 export interface SettingsPanelProps {
   settings: Settings;
   reducedMotion: boolean;
   onChange(patch: Partial<Settings>): void;
+  /** Play a short tone so the player can hear the level they just chose. */
+  onPreviewSound(): void;
   onClose(): void;
 }
 
-export function SettingsPanel({ settings, reducedMotion, onChange, onClose }: SettingsPanelProps) {
+/** The steps the engine quantises to, mirrored here for display. */
+const VOLUME_STEPS = [0.3, 0.55, 0.8, 1];
+const VOLUME_LABELS = ['LOW', 'MED', 'HIGH', 'MAX'];
+
+function volumeLabel(value: number): string {
+  const index = VOLUME_STEPS.indexOf(value);
+  if (index >= 0) return VOLUME_LABELS[index];
+  /* Fallback for a value that has not been quantised yet. */
+  const nearest = VOLUME_STEPS.reduce((best, step) =>
+    Math.abs(step - value) < Math.abs(best - value) ? step : best,
+  );
+  return VOLUME_LABELS[VOLUME_STEPS.indexOf(nearest)];
+}
+
+function nextVolume(value: number): number {
+  const index = VOLUME_STEPS.indexOf(value);
+  if (index < 0) return VOLUME_STEPS[2];
+  return VOLUME_STEPS[(index + 1) % VOLUME_STEPS.length];
+}
+
+export function SettingsPanel({
+  settings,
+  reducedMotion,
+  onChange,
+  onPreviewSound,
+  onClose,
+}: SettingsPanelProps) {
   return (
     <div className="settings-overlay" role="dialog" aria-modal="true" aria-label="Settings">
       <div className="settings-panel">
@@ -59,6 +92,30 @@ export function SettingsPanel({ settings, reducedMotion, onChange, onClose }: Se
             onClick={() => onChange({ sound: !settings.sound })}
           />
           <Toggle
+            label="Volume"
+            hint={
+              settings.sound
+                ? 'Audition it — this plays a sword hit'
+                : 'Sound is off; volume has nothing to act on'
+            }
+            on={settings.sound}
+            disabled={!settings.sound}
+            onLabel={volumeLabel(settings.volume)}
+            offLabel={volumeLabel(settings.volume)}
+            onClick={() => {
+              onChange({ volume: nextVolume(settings.volume) });
+              /* A preview is the only way to know what "LOW" means. */
+              onPreviewSound();
+            }}
+          />
+          <Toggle
+            label="Room tone"
+            hint="Wind, drips, and the occasional thing that does not belong"
+            on={settings.ambience}
+            disabled={!settings.sound}
+            onClick={() => onChange({ ambience: !settings.ambience })}
+          />
+          <Toggle
             label="Theme"
             hint={settings.theme === 'green' ? 'Green phosphor' : 'Amber phosphor'}
             on={settings.theme === 'amber'}
@@ -91,7 +148,8 @@ export function SettingsPanel({ settings, reducedMotion, onChange, onClose }: Se
         )}
 
         <p className="settings-note t-ghost">
-          Settings are saved with your character, in this browser.
+          Settings are saved in this browser. Audio is synthesised at runtime — no files, no
+          downloads.
         </p>
       </div>
     </div>

@@ -1,5 +1,12 @@
 import type { CombatLine } from '../api/types';
-import type { HeaderCharacter, MenuEntry, Screen, SlotSummary, WirePrompt } from '../api/wire';
+import type {
+  HeaderCharacter,
+  MenuEntry,
+  Screen,
+  SlotSummary,
+  WireEntry,
+  WirePrompt,
+} from '../api/wire';
 
 /**
  * The client's view model.
@@ -24,6 +31,8 @@ export interface ClientState {
   character: HeaderCharacter | null;
   prompt: WirePrompt | null;
   menu: MenuEntry[] | null;
+  /** Live text entry, or null when no field is being filled in. */
+  entry: WireEntry | null;
   slots: SlotSummary[];
   feed: string[];
 
@@ -48,6 +57,7 @@ export const initialClientState: ClientState = {
   character: null,
   prompt: null,
   menu: null,
+  entry: null,
   slots: [],
   feed: [],
   log: [],
@@ -89,6 +99,7 @@ export function clientReducer(state: ClientState, action: ClientAction): ClientS
         character: screen.character,
         prompt: screen.prompt,
         menu: screen.menu,
+        entry: screen.entry,
         slots: screen.slots,
         feed: screen.feed,
         log,

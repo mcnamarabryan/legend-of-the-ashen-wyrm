@@ -343,6 +343,69 @@ body {
   50%, 100% { opacity: 0; }
 }
 
+/* --------------------------------------------------------------- text entry */
+
+/*
+ * The name prompt. It sits below the log and outside its trimming, because this
+ * is the one screen where what you are typing has to stay still and stay visible
+ * while you type it.
+ *
+ * Bordered rather than bare so the field reads as a place to type even when
+ * empty — an empty-looking screen was precisely the bug this fixes.
+ */
+.term-entry {
+  display: grid;
+  gap: 4px;
+  margin-top: 14px;
+  padding: 10px 14px;
+  border: 1px solid var(--green-ghost);
+  border-left: 2px solid var(--green-dim);
+  border-radius: var(--radius);
+  background: rgba(51, 255, 102, 0.03);
+}
+
+.theme-amber .term-entry {
+  background: rgba(255, 176, 0, 0.035);
+}
+
+.entry-label {
+  font-size: 0.82em;
+  letter-spacing: 0.16em;
+}
+
+.entry-input {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  font-size: 1.12em;
+  letter-spacing: 0.06em;
+  /* A minimum height stops the box jumping when the first character lands. */
+  min-height: 1.5em;
+}
+
+.entry-prompt {
+  letter-spacing: 0;
+}
+
+/* The typed value must not break mid-name, or the caret ends up on its own line. */
+.entry-input > span {
+  white-space: pre;
+}
+
+.entry-meta {
+  font-size: 0.76em;
+  letter-spacing: 0.04em;
+  min-height: 1.2em;
+}
+
+.entry-count {
+  color: var(--amber);
+}
+
+.theme-amber .entry-count {
+  color: var(--green-bright);
+}
+
 /* --------------------------------------------------------------- boot */
 
 .screen-boot {
@@ -604,6 +667,44 @@ body {
   align-items: baseline;
   gap: 10px;
   white-space: nowrap;
+}
+
+/*
+ * Staged reveal for the title screen.
+ *
+ * Elements are laid out from the first frame — no `display: none` — so the
+ * container height is stable and the scroll pin has something honest to measure.
+ * Only opacity and a small translate animate.
+ *
+ * That distinction IS the bug fix. Hiding stages would make the page short and
+ * then grow, which is how the wordmark got pushed out of view in the first place.
+ * Reserving the space keeps the layout true while the content fades in.
+ */
+.title-tagline.reveal,
+.title-roster.reveal,
+.title-menu.reveal,
+.title-footer.reveal {
+  opacity: 0;
+  transform: translateY(6px);
+  transition: opacity 340ms ease-out, transform 340ms ease-out;
+}
+
+.title-tagline.reveal.is-shown,
+.title-roster.reveal.is-shown,
+.title-menu.reveal.is-shown,
+.title-footer.reveal.is-shown {
+  opacity: 1;
+  transform: none;
+}
+
+/* Reduced motion: the content is simply there. A reveal is motion. */
+.is-reduced-motion .title-tagline.reveal,
+.is-reduced-motion .title-roster.reveal,
+.is-reduced-motion .title-menu.reveal,
+.is-reduced-motion .title-footer.reveal {
+  opacity: 1;
+  transform: none;
+  transition: none;
 }
 
 .title-character {

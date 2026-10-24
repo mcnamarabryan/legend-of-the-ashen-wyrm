@@ -1,13 +1,15 @@
 import type { Character, CombatLine, SaveFile } from './engine/types';
 import { dayKey, daysBetween, gameRules, toRoman } from './engine/rules';
 import { emptySave } from './engine/save';
+import { rolloverDay } from './engine/economy';
 import { buildStartingCharacter, validateName } from './engine/creation';
 import { progressResidents } from './engine/pvp';
 import { createRng } from './engine/rng';
 import { titleForLevel } from './content/strings';
 import { itemById } from './content/items';
+import type { RealmDb } from './store';
 import * as flow from './flow';
-import type { Screen, SlotSummary } from './wire';
+import type { Screen, SlotSummary, WireEntry } from './wire';
 
 /**
  * THE AUTHORITY.
@@ -51,20 +53,70 @@ export type flowView =
 /**
  * A realm lives on the server. One node, one realm, several characters —
  * which is now genuinely enforced rather than merely assumed.
+ *
+ * PERSISTENCE: characters and realm state live in SQLite (`store.ts`). The maps
+ * below are a cache rebuilt on boot; every mutation writes through, so a restart
+ * resumes exactly where it left off.
+ *
+ * Active *sessions* are deliberately NOT persisted. A session is a live
+ * handshake — a token plus which screen you are looking at. Restart the server
+ * and the token is gone, but the character is not: you reload, get a new token,
+ * and pick your character from the title screen. The durable thing survives;
+ * the ephemeral thing does not. That is the right split.
  */
 export class Realm {
+  private db: RealmDb;
   private sessions = new Map<string, StoredSession>();
   private byName = new Map<string, string>();
+  /**
+   * Which session created which character.
+   *
+   * WITHOUT THIS, ANY SESSION COULD TAKE OVER ANY CHARACTER. The title screen
+   * lists every slot in the realm, and pressing a digit used to copy that
+   * slot's save into the caller — including someone else's. The audit script
+   * proved it: session B pressed [1] and was immediately playing session A's
+   * character, spending A's turns.
+   *
+   * `byName` alone cannot express this, because it answers "who holds this
+   * name" for PvP lookup, not "who is allowed to become this character".
+   */
+  private owner = new Map<string, string>();
   private residents: ReturnType<typeof emptySave>['residents'];
   private hall: SaveFile['hallOfFame'] = [];
   private feed: SaveFile['realmFeed'] = [];
 
-  constructor(seed?: { residents?: ReturnType<typeof emptySave>['residents'] }) {
-    this.residents = seed?.residents ?? emptySave(buildStartingCharacter({
-      name: 'Placeholder',
-      sex: 'm',
-      cls: 'warrior',
-    })).residents;
+  constructor(db: RealmDb) {
+    this.db = db;
+
+    const seeded = emptySave(
+      buildStartingCharacter({ name: 'Placeholder', sex: 'm', cls: 'warrior' }),
+    ).residents;
+
+    const snapshot = db.snapshot(seeded);
+
+    this.residents = snapshot.residents.length > 0 ? snapshot.residents : seeded;
+    this.hall = snapshot.hall;
+    this.feed = snapshot.feed;
+
+    /*
+     * Rehydrate characters into memory so they can be listed and attacked.
+     *
+     * Each keeps its stored owner token, which is the token that created it and
+     * is long dead. That yields exactly the right behaviour: after a restart the
+     * character is present and visible in Who's Who, but no *new* session can
+     * load it by pressing a digit.
+     */
+    for (const stored of snapshot.characters) {
+      const key = stored.name.trim().toLowerCase();
+      this.owner.set(key, stored.owner);
+      this.byName.set(key, stored.owner);
+      this.sessions.set(stored.owner, {
+        token: stored.owner,
+        save: stored.save,
+        view: stored.save.character.retired ? { kind: 'hall' } : { kind: 'hub' },
+        lastSeen: 0,
+      });
+    }
   }
 
   /* ---- slots --------------------------------------------------- */
@@ -159,6 +211,39 @@ export class Realm {
     }
   }
 
+  /* ---- persistence --------------------------------------------- */
+
+  /**
+   * Write the live character and realm state through to SQLite.
+   *
+   * Called after every command. Cheap at this scale — a few KB serialised —
+   * and it means "what is in memory" and "what is on disk" cannot diverge for
+   * more than a single keypress.
+   */
+  private persist(session: StoredSession): void {
+    const c = session.save.character;
+    const key = c.name.trim().toLowerCase();
+
+    /* Only characters that were actually created. A session sitting on the
+       title screen carries an "Unnamed" placeholder which must never become a
+       row, or the realm slowly fills with ghosts. */
+    if (this.byName.has(key)) {
+      this.db.putCharacter(c.name, session.token, {
+        ...session.save,
+        residents: this.residents,
+        hallOfFame: this.hall,
+        realmFeed: this.feed,
+      });
+    }
+
+    this.db.putRealm({
+      residents: this.residents,
+      hall: this.hall,
+      feed: this.feed,
+      day: dayKey(),
+    });
+  }
+
   /* ---- the one entry point ------------------------------------- */
 
   /**
@@ -173,6 +258,21 @@ export class Realm {
     session.lastSeen = now;
 
     this.tickResidents(session, now);
+
+    /*
+     * THE DAY ROLLOVER. This was missing entirely.
+     *
+     * Without it, turns never came back: spend your ten and you were stuck at
+     * zero forever. The central premise of a daily-turns game quietly not
+     * working, and no test caught it because the tests exercise `rolloverDay`
+     * directly rather than through the server.
+     *
+     * `rolloverDay` is idempotent, so calling it on every command is safe.
+     */
+    const rolled = rolloverDay(session.save.character, now);
+    if (rolled.rolled) {
+      session.save = { ...session.save, character: rolled.character };
+    }
 
     /* Two forms of the key: `k` for command matching, `raw` for text entry.
        Lowercasing a typed name turns "Aria" into "aria" — a bug the player
@@ -189,6 +289,27 @@ export class Realm {
       hallOfFame: this.hall,
       realmFeed: this.feed,
     };
+
+    /* Tell the player the day turned over, and what the bank paid. */
+    if (rolled.rolled) {
+      result.lines = [
+        { text: 'A new day on the node.', tone: 'bright' },
+        { text: `{dim}${gameRules.turnsPerDay} turns restored.{/}`, tone: 'dim' },
+        ...(rolled.interest > 0
+          ? [
+              {
+                text: `{gold}The bank paid you ${rolled.interest} gold in interest overnight.{/}`,
+                tone: 'gold' as const,
+              },
+            ]
+          : []),
+        ...result.lines,
+      ];
+    }
+
+    /* Durability. Unconditional, because the reduce above may have just created
+       the character; `persist` itself decides whether a row is warranted. */
+    this.persist(session);
 
     return this.toScreen(session, result);
   }
@@ -261,7 +382,20 @@ export class Realm {
         if (DIGITS.includes(k)) {
           const slot = this.slots()[DIGITS.indexOf(k)];
           if (!slot) return { lines: [] };
-          const target = this.sessions.get(this.byName.get(slot.name.toLowerCase()) ?? '');
+
+          const key = slot.name.trim().toLowerCase();
+
+          /* Only your own characters. The title screen lists the whole realm,
+             but "listed" must not mean "claimable" — without this check any
+             session could take over any character by pressing its digit. */
+          if (this.owner.get(key) !== session.token) {
+            return say(
+              '{dim}That adventurer is not yours to play. Create your own with [N].{/}',
+              'dim',
+            );
+          }
+
+          const target = this.sessions.get(this.byName.get(key) ?? '');
           if (target) {
             session.save = { ...target.save };
             session.view = { kind: 'hub' };
@@ -343,6 +477,7 @@ export class Realm {
         });
         session.save = { ...emptySave(character), residents: this.residents };
         this.byName.set(character.name.trim().toLowerCase(), session.token);
+        this.owner.set(character.name.trim().toLowerCase(), session.token);
         session.view = { kind: 'hub' };
         return {
           lines: [
@@ -459,10 +594,36 @@ export class Realm {
       character: created ? headerCharacter(c) : null,
       prompt: promptFor(view),
       menu: view.kind === 'hub' ? HUB_MENU : null,
+      entry: entryFor(view, c.name),
       slots: this.slots(),
       feed: this.feed.slice(0, 6).map((f) => f.text),
     };
   }
+}
+
+/**
+ * The live text field, if the current screen has one.
+ *
+ * Only the name step needs this: it is the sole place the player types free text
+ * rather than pressing a single command key. Everything else is a Y/N or a digit,
+ * and those are answered by the prompt bar.
+ *
+ * The value comes straight from the server's copy of the character, which is
+ * what makes this honest — the browser is not echoing its own keystrokes back
+ * at itself, it is being told what the node believes has been entered. A dropped
+ * keypress therefore shows up as a dropped character instead of silently
+ * diverging, and backspace behaves correctly because the server sliced the
+ * string rather than the client guessing.
+ */
+function entryFor(view: flowView, name: string): WireEntry | null {
+  if (view.kind !== 'create' || view.step !== 'name') return null;
+
+  return {
+    label: 'WHAT IS YOUR NAME?',
+    value: name,
+    hint: 'letters, apostrophes, spaces, hyphens',
+    max: gameRules.nameMaxLength,
+  };
 }
 
 /** What the header needs. No more than that crosses the wire. */
@@ -557,7 +718,18 @@ function viewOf(v: { kind: string } & Record<string, unknown>): flowView {
     return { kind: 'shop', tab: ((v as { tab?: 'weapon' | 'armor' }).tab ?? 'weapon') };
   }
   if (kind === 'create') {
-    return { kind: 'create', step: 'name' };
+    /*
+     * Preserve the step.
+     *
+     * This returned `step: 'name'` unconditionally, so any create view routed
+     * through `viewOf` snapped back to the first question. It survived only
+     * because `reduce` assigns `session.view` directly for the sex and class
+     * steps and never comes through here — but a future caller that did would
+     * strand the player on the name prompt, which is exactly the class of bug
+     * that makes a screen look like it forgot what was typed.
+     */
+    const step = (v as { step?: 'name' | 'sex' | 'class' }).step ?? 'name';
+    return { kind: 'create', step };
   }
   const allowed: flowView['kind'][] = [
     'title',

@@ -1,166 +1,92 @@
 /**
- * THE SOUND OF A 1993 MODEM, SYNTHESISED.
+ * THE ENGINE.
  *
- * No audio files, no dependencies, no network. Every sound in this file is
- * built from oscillators and noise buffers at runtime. That is not a
- * constraint I worked around — it is the correct way to make a modem noise,
- * because a real modem handshake WAS a set of tones, and tones are cheap.
+ * Owns the AudioContext, the master bus, and the room. Plays named sounds from
+ * the catalogue and schedules the modem handshake. That is the whole job — every
+ * decision about *what* a sound is lives in `catalogue.ts`, and every decision
+ * about *how* to render one lives in `render.ts`.
  *
- * The whole engine is gated behind one rule: **nothing plays until the player
- * has gestured.** Browsers suspend audio contexts created without a user
- * gesture, and a game that shouts before you touch it is a worse game. Call
- * `unlock()` from a keydown or click.
+ * ONE RULE OVERRIDES EVERYTHING: nothing plays until the player has gestured.
+ * Browsers suspend an AudioContext created without user activation, and a game
+ * that makes noise before you touch it is a worse game. `unlock()` must be
+ * called from a keydown or click. That constraint is why the boot screen asks
+ * you to dial in — the modem is the reward for the gesture the platform demands.
  *
- * That rule is why the boot screen asks you to dial in rather than starting on
- * its own: the modem handshake you hear first is the reward for the gesture the
- * browser demands. The fiction and the constraint happen to agree, which is
- * luckier than it sounds — a BBS always began with you picking up the phone.
+ * THE FIRST-GESTURE BUG, WHICH IS NOW GUARDED BY TESTS.
  *
- * Design notes, because these are the decisions that matter:
+ * `resume()` is asynchronous. An earlier version of this file unlocked the
+ * context and then synchronously checked `ctx.state === 'running'` before
+ * scheduling anything. On the very first gesture that check failed, nothing was
+ * scheduled, and the modem was silent. It worked on the second attempt and never
+ * the first — the worst kind of bug, because it looks like flakiness.
  *
- *  - **Master gain, not per-sound gain.** One `GainNode` sits between the graph
- *    and the destination so muting is instant and cannot click.
- *  - **A compressor on the bus.** Keyclicks and thuds overlapping must not clip.
- *  - **Everything is scheduled ahead.** `osc.start(t)` with absolute times, so
- *    the handshake is sample-accurate even if the main thread stalls.
- *  - **Noise is one pre-rendered buffer,** reused. Generating white noise per
- *    hit allocates a buffer every keystroke; at 10 keys/second that is garbage
- *    collection the player hears as stutter.
+ * The fix is structural, not a patch: **scheduling never depends on context
+ * state.** An AudioContext queues sources and plays them once running, so we
+ * schedule and let the browser catch up. `unlocked` reports "we have a context",
+ * never "the context is running", because the second thing is unknowable at call
+ * time and the first is what callers actually need to know.
  */
 
-export type SoundName =
-  | 'key'
-  | 'select'
-  | 'back'
-  | 'hit'
-  | 'miss'
-  | 'crit'
-  | 'hurt'
-  | 'loot'
-  | 'level'
-  | 'death'
-  | 'wyrm'
-  | 'boot';
+import type { SoundName, VolumeStep } from './Voice';
+import { quantiseVolume } from './Voice';
+import { DESIGNS } from './catalogue';
+import { buildBus, renderSound, type RenderContext } from './render';
+import { makeImpulse } from './waves';
+import { scheduleHandshake, type HandshakeHandle } from './handshake';
+import { startAmbience, type AmbienceHandle, type AmbienceScene } from './ambience';
+import { sceneForLocation } from './scenes';
 
-interface Voice {
-  /** Start offset in seconds from `now`. */
-  at: number;
-  freq: number;
-  /** End frequency, for sweeps. */
-  to?: number;
-  /** Duration in seconds. */
-  dur: number;
-  type: OscillatorType;
-  gain: number;
-  /** Optional noise bed, 0–1. */
-  noise?: number;
-  /** Optional lowpass cutoff for the noise, in Hz. */
-  filter?: number;
-}
-
-/* ------------------------------------------------------------------ */
-/* The sound designs                                                   */
-/* ------------------------------------------------------------------ */
+export type { SoundName };
+export { DESIGNS, SOUND_NAMES } from './catalogue';
 
 /**
- * Each entry is a layering of voices. Relative `at` offsets compose the sound;
- * the sum is what you hear. Kept deliberately short — this is a terminal, not
- * a film.
+ * Master level.
+ *
+ * Chosen so the loudest design (a critical hit plus its reverb tail) peaks near
+ * −6 dBFS with the volume control at full. The compressor is a safety net, not a
+ * mixing crutch — if it is working hard on normal play, this number is too high.
  */
-const DESIGNS: Record<SoundName, Voice[]> = {
-  /* A 4ms square blip. The single most important sound in the game, because
-     you hear it more than any other. */
-  key: [{ at: 0, freq: 1180, to: 620, dur: 0.028, type: 'square', gain: 0.055 }],
+const MASTER_LEVEL = 0.82;
 
-  /* Committing to something — a two-step rise. */
-  select: [
-    { at: 0, freq: 660, dur: 0.045, type: 'square', gain: 0.06 },
-    { at: 0.045, freq: 990, dur: 0.06, type: 'square', gain: 0.05 },
-  ],
-
-  /* Backing out — a two-step fall. */
-  back: [
-    { at: 0, freq: 620, dur: 0.045, type: 'square', gain: 0.055 },
-    { at: 0.045, freq: 380, dur: 0.07, type: 'square', gain: 0.05 },
-  ],
-
-  /* Blade into something. Short noise crack over a low body thump. */
-  hit: [
-    { at: 0, freq: 190, to: 90, dur: 0.09, type: 'triangle', gain: 0.13 },
-    { at: 0, freq: 0, dur: 0.05, type: 'sine', gain: 0.06, noise: 1, filter: 2600 },
-  ],
-
-  /* Whiff. Air only. */
-  miss: [{ at: 0, freq: 0, dur: 0.11, type: 'sine', gain: 0.05, noise: 1, filter: 1400 }],
-
-  /* Critical: the hit sound, plus a rising metallic ping. */
-  crit: [
-    { at: 0, freq: 190, to: 80, dur: 0.12, type: 'triangle', gain: 0.16 },
-    { at: 0, freq: 0, dur: 0.07, type: 'sine', gain: 0.08, noise: 1, filter: 3200 },
-    { at: 0.02, freq: 1480, to: 1980, dur: 0.16, type: 'square', gain: 0.045 },
-  ],
-
-  /* Taking damage. Lower, duller, longer than `hit`. */
-  hurt: [
-    { at: 0, freq: 130, to: 62, dur: 0.16, type: 'sawtooth', gain: 0.1 },
-    { at: 0, freq: 0, dur: 0.1, type: 'sine', gain: 0.05, noise: 1, filter: 900 },
-  ],
-
-  /* Coins. Two bright pings a beat apart. */
-  loot: [
-    { at: 0, freq: 1320, dur: 0.05, type: 'square', gain: 0.05 },
-    { at: 0.06, freq: 1760, dur: 0.07, type: 'square', gain: 0.045 },
-  ],
-
-  /* Level up: a four-note arpeggio. The one sound allowed to be pretty. */
-  level: [
-    { at: 0.0, freq: 523.25, dur: 0.1, type: 'triangle', gain: 0.07 },
-    { at: 0.1, freq: 659.25, dur: 0.1, type: 'triangle', gain: 0.07 },
-    { at: 0.2, freq: 783.99, dur: 0.1, type: 'triangle', gain: 0.07 },
-    { at: 0.3, freq: 1046.5, dur: 0.26, type: 'triangle', gain: 0.08 },
-  ],
-
-  /* Death: a descending fall into a low thud. */
-  death: [
-    { at: 0, freq: 392, to: 98, dur: 0.5, type: 'sawtooth', gain: 0.09 },
-    { at: 0.34, freq: 72, to: 48, dur: 0.34, type: 'triangle', gain: 0.12 },
-  ],
-
-  /* The wyrm: a low sub-bass swell. Felt more than heard. */
-  wyrm: [
-    { at: 0, freq: 58, to: 42, dur: 0.7, type: 'sawtooth', gain: 0.11 },
-    { at: 0, freq: 87, to: 63, dur: 0.6, type: 'triangle', gain: 0.06 },
-    { at: 0.1, freq: 0, dur: 0.5, type: 'sine', gain: 0.04, noise: 1, filter: 420 },
-  ],
-
-  /* A CRT settling. Quiet, and only heard once. */
-  boot: [
-    { at: 0, freq: 0, dur: 0.28, type: 'sine', gain: 0.045, noise: 1, filter: 5000 },
-    { at: 0.02, freq: 120, to: 60, dur: 0.3, type: 'triangle', gain: 0.05 },
-  ],
-};
-
-/* ------------------------------------------------------------------ */
-/* The engine                                                          */
-/* ------------------------------------------------------------------ */
-
-const MASTER_LEVEL = 0.9;
+/** Default listening level. Loud enough to feel, quiet enough not to startle. */
+const DEFAULT_VOLUME = 0.8;
 
 export class SoundEngine {
   private ctx: AudioContext | null = null;
-  private master: GainNode | null = null;
-  private noiseBuffer: AudioBuffer | null = null;
-  /** Sound is on unless the player deliberately turns it off. */
+  private bus: RenderContext | null = null;
   private enabled = true;
-  private handshakeTimer: number | null = null;
+  private volume: VolumeStep = quantiseVolume(DEFAULT_VOLUME) as VolumeStep;
+
+  /** Per-sound throttle timestamps, keyed by name. */
+  private lastPlayed = new Map<SoundName, number>();
+  /** The live handshake, so a second call does not layer two modems. */
+  private activeHandshake: HandshakeHandle | null = null;
+  /** The ambient bed. Created on unlock, released on mute or dispose. */
+  private ambience: AmbienceHandle | null = null;
+  private ambienceWanted = true;
+  /** Whether ambience is currently switched on by the player. */
+  private ambienceEnabled = true;
 
   /**
-   * True once a real AudioContext exists and has been asked to start.
+   * The scene that should be playing.
    *
-   * Note what this is NOT: a guarantee that `state === 'running'`. `resume()` is
-   * asynchronous, so a caller that unlocks and immediately checks this would be
-   * racing the browser. That race is exactly what silenced the modem on first
-   * play — see the note on scheduling in `handshake()`.
+   * Held even while ambience is torn down, so unmuting resumes in the right
+   * room rather than always snapping back to the forest.
+   */
+  private ambienceScene: AmbienceScene = 'machine';
+
+  /**
+   * How loud the bed sits.
+   *
+   * Roughly a tenth of a keyclick. The test is simple: if you notice the
+   * ambience as a *feature* rather than as a room, this is too high.
+   */
+  private static readonly AMBIENCE_LEVEL = 0.85;
+
+  /**
+   * True once a real AudioContext exists.
+   *
+   * Explicitly NOT a promise that `state === 'running'`. See the file header.
    */
   get unlocked(): boolean {
     return this.ctx !== null;
@@ -170,16 +96,18 @@ export class SoundEngine {
     return this.enabled;
   }
 
-  /** The raw context state, for diagnostics. */
+  /** Raw context state, for diagnostics and the settings panel. */
   get state(): AudioContextState | 'none' {
     return this.ctx?.state ?? 'none';
   }
 
+  get currentVolume(): VolumeStep {
+    return this.volume;
+  }
+
   /**
-   * Create or resume the context. MUST be called from a user gesture the first
-   * time; browsers refuse to start audio otherwise.
-   *
-   * Returns false if the browser gave us nothing to work with, which is not an
+   * Create or resume the context. Must be called from a user gesture the first
+   * time. Returns false if the browser offers no audio at all, which is not an
    * error — a game that cannot make sound should still play.
    */
   unlock(): boolean {
@@ -194,38 +122,11 @@ export class SoundEngine {
     try {
       if (!this.ctx) {
         this.ctx = new Ctor();
-
-        /* One gate between the graph and the speakers. Muting ramps this to
-           zero instead of tearing the graph down, so it cannot click. */
-        this.master = this.ctx.createGain();
-        this.master.gain.value = this.enabled ? MASTER_LEVEL : 0;
-
-        const compressor = this.ctx.createDynamicsCompressor();
-        compressor.threshold.value = -18;
-        compressor.knee.value = 12;
-        compressor.ratio.value = 6;
-        compressor.attack.value = 0.002;
-        compressor.release.value = 0.14;
-
-        this.master.connect(compressor);
-        compressor.connect(this.ctx.destination);
-
-        /* White noise, rendered once and reused forever. */
-        const seconds = 1;
-        const buffer = this.ctx.createBuffer(
-          1,
-          Math.floor(this.ctx.sampleRate * seconds),
-          this.ctx.sampleRate,
-        );
-        const data = buffer.getChannelData(0);
-        for (let i = 0; i < data.length; i += 1) {
-          data[i] = Math.random() * 2 - 1;
-        }
-        this.noiseBuffer = buffer;
+        this.build();
       }
 
-      /* Fire and forget: callers must NOT wait on this. Anything they schedule
-         now will play when the promise settles. */
+      /* Fire and forget. Callers must not wait on this — anything scheduled now
+         plays when the promise settles. */
       if (this.ctx.state === 'suspended') {
         void this.ctx.resume().catch(() => undefined);
       }
@@ -234,8 +135,129 @@ export class SoundEngine {
       return true;
     } catch {
       this.ctx = null;
+      this.bus = null;
       return false;
     }
+  }
+
+  /** Wire the master bus and the room. Called once, on first unlock. */
+  private build(): void {
+    const ctx = this.ctx;
+    if (!ctx) return;
+
+    this.bus = buildBus(ctx, ctx.destination);
+
+    /*
+     * The room.
+     *
+     * Guarded because a stubbed AudioContext (tests) may not implement a
+     * convolver. When it is missing the wet bus stays connected but silent: the
+     * reverb send becomes a no-op rather than an exception, which is the right
+     * failure mode — sounds still play, they are simply dry.
+     */
+    if (typeof ctx.createConvolver === 'function') {
+      try {
+        const convolver = ctx.createConvolver();
+        convolver.buffer = makeImpulse(ctx);
+        convolver.connect(this.bus.reverb);
+      } catch {
+        /* No room. The wet bus is already wired and simply receives nothing, so
+         * sounds play dry rather than not at all.
+         */
+      }
+    }
+
+    this.startAmbienceIfWanted();
+  }
+
+  /**
+   * Bring the room tone up, if the player wants it.
+   *
+   * Started lazily rather than at construction: there is no context until the
+   * first gesture, and a muted player should not pay for oscillators they cannot
+   * hear. Failures are swallowed — a game that cannot manage an ambient bed
+   * should still play.
+   */
+  private startAmbienceIfWanted(): void {
+    const ctx = this.ctx;
+    const bus = this.bus;
+    if (!ctx || !bus) return;
+    if (this.ambience) return;
+    if (!this.ambienceWanted || !this.ambienceEnabled || !this.enabled) return;
+
+    try {
+      this.ambience = startAmbience(ctx, bus.master, this.ambienceScene);
+      this.ambience.setLevel(SoundEngine.AMBIENCE_LEVEL);
+    } catch {
+      this.ambience = null;
+    }
+  }
+
+  /**
+   * Move the ambience to a game location.
+   *
+   * Called from the shell as the player moves. Idempotent: the scene only changes
+   * when it actually differs, so a re-render that re-states the current location
+   * costs nothing — which matters, because the shell re-renders on every
+   * keystroke.
+   */
+  setLocation(location: string): void {
+    this.setAmbienceScene(sceneForLocation(location));
+  }
+
+  /** Move the ambience to a scene directly. */
+  setAmbienceScene(scene: AmbienceScene): void {
+    if (this.ambienceScene === scene) return;
+    this.ambienceScene = scene;
+
+    /* If ambience is torn down (muted), remember the scene for later rather than
+       losing it — unmuting should resume in the right room. */
+    if (!this.ambience) return;
+
+    try {
+      this.ambience.setScene(scene);
+    } catch {
+      /* A scene change must never take down the game. */
+    }
+  }
+
+  /** The scene currently requested. Diagnostics only. */
+  get currentAmbienceScene(): AmbienceScene {
+    return this.ambienceScene;
+  }
+
+  /** Fade the bed out and release it. */
+  private stopAmbience(): void {
+    if (!this.ambience) return;
+    try {
+      this.ambience.stop();
+    } catch {
+      /* already gone */
+    }
+    this.ambience = null;
+  }
+
+  /**
+   * Turn the room tone on or off.
+   *
+   * Separate from the master mute on purpose. Some players want the effects and
+   * not the drone; forcing them to choose both or neither is the kind of false
+   * economy that makes people turn sound off entirely.
+   */
+  setAmbienceEnabled(on: boolean): void {
+    this.ambienceEnabled = on;
+    this.ambienceWanted = on;
+
+    if (on) {
+      this.unlock();
+      this.startAmbienceIfWanted();
+    } else {
+      this.stopAmbience();
+    }
+  }
+
+  get isAmbienceEnabled(): boolean {
+    return this.ambienceEnabled;
   }
 
   /** Turn sound on or off. Turning it on unlocks, because that IS a gesture. */
@@ -243,355 +265,141 @@ export class SoundEngine {
     this.enabled = on;
     if (on) this.unlock();
     this.applyVolume();
+
+    /*
+     * Muting must release the bed, not merely fade it.
+     *
+     * The bed routes through the same master gain so the fade is automatic, but
+     * leaving a dozen oscillators and two looping noise sources running for a
+     * player who has muted the game is pure waste — and on a laptop it is
+     * battery. Tear it down and rebuild on unmute.
+     */
+    if (!on) this.stopAmbience();
+    else this.startAmbienceIfWanted();
+  }
+
+  /** Set listening level, quantised to perceptual steps. */
+  setVolume(value: number): void {
+    this.volume = quantiseVolume(value) as VolumeStep;
+    this.applyVolume();
   }
 
   private applyVolume(): void {
-    if (!this.ctx || !this.master) return;
-    const target = this.enabled ? MASTER_LEVEL : 0;
-    const now = this.ctx.currentTime;
-    this.master.gain.cancelScheduledValues(now);
+    const { ctx, bus } = this;
+    if (!ctx || !bus) return;
+
+    const target = this.enabled ? MASTER_LEVEL * this.volume : 0;
+    const now = ctx.currentTime;
+
+    const gain = bus.master.gain;
+    gain.cancelScheduledValues(now);
     /* A short ramp, not a jump: an instant gain change is an audible click. */
-    this.master.gain.setTargetAtTime(target, now, 0.015);
+    gain.setTargetAtTime(target, now, 0.015);
   }
 
-  /* ---------------------------------------------------------------- */
+  /* ------------------------------------------------------------------ */
+  /* Playback                                                            */
+  /* ------------------------------------------------------------------ */
 
   /**
-   * Play one named sound. Silent and safe if audio is unavailable.
+   * Play one named sound.
    *
-   * No `state === 'running'` guard, deliberately: an AudioContext queues
-   * scheduled sources and plays them once running, so a sound requested a few
-   * milliseconds before `resume()` settles still plays. Checking the state here
-   * was the other half of the first-gesture bug.
+   * No `state === 'running'` guard, deliberately — see the file header.
    */
   play(name: SoundName): void {
-    if (!this.enabled || !this.ctx || !this.master) return;
+    const { ctx, bus } = this;
+    if (!this.enabled || !ctx || !bus) return;
 
     const design = DESIGNS[name];
     if (!design) return;
 
-    const now = this.ctx.currentTime + 0.005;
-    for (const voice of design) this.emit(voice, now);
-  }
+    /* Throttle. Mashing a key through a scroll should sound like a keyboard,
+       not like a buzz saw. */
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    const last = this.lastPlayed.get(name) ?? -Infinity;
+    if (design.throttleMs && now - last < design.throttleMs) return;
+    this.lastPlayed.set(name, now);
 
-  private emit(voice: Voice, now: number): void {
-    const ctx = this.ctx;
-    const master = this.master;
-    if (!ctx || !master) return;
+    /* Repeats drift a few cents so no two hits are bit-identical. */
+    const jitter = design.jitter ? (Math.random() * 2 - 1) * design.jitter : 0;
 
-    const start = now + voice.at;
-    const end = start + voice.dur;
+    /* Slight stereo scatter too — the forest is not a mono room. */
+    const pan = jitter !== 0 ? (Math.random() * 2 - 1) * 0.12 : 0;
 
-    const envelope = ctx.createGain();
-    envelope.gain.setValueAtTime(0.0001, start);
-    /* 6ms attack keeps transients crisp without a pop. */
-    envelope.gain.exponentialRampToValueAtTime(Math.max(0.0002, voice.gain), start + 0.006);
-    envelope.gain.exponentialRampToValueAtTime(0.0001, end);
-
-    const bus = ctx.createBiquadFilter();
-    bus.type = 'lowpass';
-    bus.frequency.setValueAtTime(voice.filter ?? 12000, start);
-    bus.connect(envelope);
-    envelope.connect(master);
-
-    /* Tonal layer. `freq: 0` means "noise only". */
-    if (voice.freq > 0) {
-      const osc = ctx.createOscillator();
-      osc.type = voice.type;
-      osc.frequency.setValueAtTime(voice.freq, start);
-      if (voice.to && voice.to !== voice.freq) {
-        osc.frequency.exponentialRampToValueAtTime(Math.max(20, voice.to), end);
-      }
-      osc.connect(bus);
-      osc.start(start);
-      osc.stop(end + 0.02);
-    }
-
-    /* Noise layer, from the shared buffer. */
-    if (voice.noise && this.noiseBuffer) {
-      const src = ctx.createBufferSource();
-      src.buffer = this.noiseBuffer;
-      /* Start at a random offset so repeated hits do not sound identical. */
-      src.loop = true;
-      const noiseGain = ctx.createGain();
-      noiseGain.gain.value = voice.noise;
-      src.connect(noiseGain);
-      noiseGain.connect(bus);
-      src.start(start, Math.random() * 0.8);
-      src.stop(end + 0.02);
+    try {
+      renderSound(bus, design, ctx.currentTime + 0.006, { detune: jitter, pan });
+    } catch {
+      /*
+       * A single bad design must never take down input handling. Swallow it: a
+       * silent frame the player never notices beats an exception thrown inside
+       * a keydown handler.
+       */
     }
   }
 
-  /* ---------------------------------------------------------------- */
-  /* The modem handshake                                               */
-  /* ---------------------------------------------------------------- */
+  /* ------------------------------------------------------------------ */
+  /* The modem                                                           */
+  /* ------------------------------------------------------------------ */
 
   /**
-   * The full call: dial, answer, negotiate, train, and settle. ~5.9 seconds.
+   * Dial. Returns a cancel function carrying the call's `duration`.
    *
-   * A real V.32bis handshake took fifteen to twenty-five seconds. That is too
-   * long for a game you play every day, but two seconds is too short to hear
-   * what it actually was — the variety IS the sound. So this is a compression
-   * that keeps every distinct *phase* rather than every second:
-   *
-   *   1. dial tone            350 + 440 Hz, the US standard pair
-   *   2. DTMF                  three digits, real keypad tone pairs
-   *   3. ringback              440 + 480 Hz
-   *   4. answer tone           2100 Hz — the long answering beep
-   *   5. CI                    1100 Hz, the caller identifying itself
-   *   6. V.8 menu              alternating dual tones. The "beep boop"
-   *   7. line probe            a sweep up the band and back down
-   *   8. training              band-swept noise, the classic screech
-   *   9. rate negotiation      three ascending pips
-   *  10. final burst           dense scrambled data
-   *  11. carrier settle        filtered hiss, then the CRT thunk
-   *
-   * Frequencies are the real ones where the standard fixed them (dial tone,
-   * DTMF, 2100/1100 Hz, V.8 pairs). The sweeps and noise are stylised,
-   * because their exact shape is not what anyone remembers — the texture is.
-   *
-   * THE BUG THIS USED TO HAVE: it bailed out when `ctx.state !== 'running'`.
-   * `resume()` is asynchronous, so on the very first gesture the state was
-   * still 'suspended' and the handshake scheduled nothing at all. Sound worked
-   * on the second attempt and never the first. It now schedules regardless;
-   * an AudioContext queues sources and plays them once running.
-   *
-   * Returns a cancel function, so leaving the boot screen early does not leave
-   * the modem screaming into a menu.
+   * That duration is the authority on how long the handshake runs. The UI waits
+   * on it rather than a hand-copied constant, so the boot screen can never claim
+   * "carrier established" while the modem is still talking.
    */
-  handshake(): () => void {
-    if (!this.enabled || !this.ctx || !this.master) return () => {};
+  handshake(): (() => void) & { duration: number } {
+    const noop = Object.assign(() => undefined, { duration: 0 });
 
-    const ctx = this.ctx;
-    const master = this.master;
+    const { ctx, bus } = this;
+    if (!this.enabled || !ctx || !bus) return noop;
 
-    /* Nudge it if it is asleep. Scheduling works regardless. */
+    /* A second handshake replaces the first rather than stacking. */
+    this.activeHandshake?.cancel();
+    this.activeHandshake = null;
+
     if (ctx.state === 'suspended') void ctx.resume().catch(() => undefined);
 
-    const t0 = ctx.currentTime + 0.02;
-    const nodes: Array<{ stop(when: number): void }> = [];
-    const timers: number[] = [];
+    try {
+      const handle = scheduleHandshake(ctx, bus.master, ctx.currentTime + 0.02);
+      this.activeHandshake = handle;
 
-    /** One oscillator with its own attack/sustain/release envelope. */
-    const tone = (
-      freq: number,
-      start: number,
-      dur: number,
-      gain: number,
-      type: OscillatorType = 'sine',
-      sweepTo?: number,
-    ) => {
-      const osc = ctx.createOscillator();
-      const env = ctx.createGain();
-      const at = t0 + start;
+      const cancel = () => {
+        handle.cancel();
+        if (this.activeHandshake === handle) this.activeHandshake = null;
+      };
 
-      osc.type = type;
-      osc.frequency.setValueAtTime(freq, at);
-      if (sweepTo && sweepTo !== freq) {
-        osc.frequency.exponentialRampToValueAtTime(Math.max(20, sweepTo), at + dur);
-      }
-
-      /* 12ms attack, hold, 30ms release. Softer than the game SFX because
-         these tones run for a long time and hard edges buzz. */
-      env.gain.setValueAtTime(0.0001, at);
-      env.gain.exponentialRampToValueAtTime(gain, at + 0.012);
-      env.gain.setValueAtTime(gain, Math.max(at + 0.014, at + dur - 0.03));
-      env.gain.exponentialRampToValueAtTime(0.0001, at + dur);
-
-      osc.connect(env);
-      env.connect(master);
-      osc.start(at);
-      osc.stop(at + dur + 0.02);
-      nodes.push(osc);
-    };
-
-    /** Two tones at once — how DTMF and the V.8 menu actually work. */
-    const dual = (
-      a: number,
-      b: number,
-      start: number,
-      dur: number,
-      gain: number,
-      type: OscillatorType = 'sine',
-    ) => {
-      tone(a, start, dur, gain, type);
-      tone(b, start, dur, gain, type);
-    };
-
-    /** A keypad press: two tones, briefly. */
-    const dtmf = (pair: [number, number], start: number, dur = 0.08) => {
-      dual(pair[0], pair[1], start, dur, 0.045);
-    };
-
-    /** Filtered noise. `Q` high = whistly band, low = broadband hiss. */
-    const noise = (
-      start: number,
-      dur: number,
-      gain: number,
-      opts: {
-        type?: BiquadFilterType;
-        freq?: number;
-        sweepTo?: number;
-        Q?: number;
-      } = {},
-    ) => {
-      if (!this.noiseBuffer) return;
-      const at = t0 + start;
-
-      const src = ctx.createBufferSource();
-      src.buffer = this.noiseBuffer;
-      src.loop = true;
-
-      const band = ctx.createBiquadFilter();
-      band.type = opts.type ?? 'bandpass';
-      band.Q.value = opts.Q ?? 3;
-      band.frequency.setValueAtTime(opts.freq ?? 1200, at);
-      if (opts.sweepTo) {
-        band.frequency.exponentialRampToValueAtTime(Math.max(60, opts.sweepTo), at + dur);
-      }
-
-      const env = ctx.createGain();
-      env.gain.setValueAtTime(0.0001, at);
-      env.gain.exponentialRampToValueAtTime(gain, at + Math.min(0.05, dur * 0.25));
-      env.gain.setValueAtTime(gain, Math.max(at + 0.06, at + dur - 0.05));
-      env.gain.exponentialRampToValueAtTime(0.0001, at + dur);
-
-      src.connect(band);
-      band.connect(env);
-      env.connect(master);
-      src.start(at, Math.random() * 0.8);
-      src.stop(at + dur + 0.02);
-      nodes.push(src);
-    };
-
-    /** Quick alternation between two tone pairs. The "beep boop" texture. */
-    const warble = (
-      pairs: Array<[number, number]>,
-      start: number,
-      step: number,
-      gain: number,
-    ) => {
-      pairs.forEach((pair, i) => {
-        dual(pair[0], pair[1], start + i * step, step * 0.85, gain);
-      });
-    };
-
-    /* ---- 1. dial tone, then off-hook --------------------------- */
-    tone(350, 0.0, 0.5, 0.032);
-    tone(440, 0.0, 0.5, 0.032);
-
-    /* ---- 2. dialing. Three digits; a node is a short number. --- */
-    dtmf([697, 1209], 0.56); // 1
-    dtmf([770, 1336], 0.66); // 5
-    dtmf([852, 1477], 0.76); // 9
-
-    /* ---- 3. ringback -------------------------------------------- */
-    dual(440, 480, 0.9, 0.22, 0.028);
-
-    /* ---- 4. answer tone. The long beep everyone remembers. ------ */
-    tone(2100, 1.2, 0.85, 0.042, 'sine');
-
-    /* ---- 5. CI: the caller says who it is ----------------------- */
-    tone(1100, 2.12, 0.26, 0.036);
-
-    /* ---- 6. V.8 menu. Alternating dual tones. ------------------- */
-    warble(
-      [
-        [980, 1180],
-        [1180, 1380],
-        [980, 1180],
-        [1380, 1580],
-        [1180, 1380],
-      ],
-      2.44,
-      0.13,
-      0.026,
-    );
-
-    /* ---- 7. line probe: sweep the band and come back ------------ */
-    noise(3.12, 0.34, 0.05, { type: 'bandpass', freq: 500, sweepTo: 3200, Q: 6 });
-    noise(3.48, 0.3, 0.045, { type: 'bandpass', freq: 3000, sweepTo: 700, Q: 5 });
-
-    /* ---- 8. training. The screech. ------------------------------ */
-    noise(3.82, 0.4, 0.062, { type: 'bandpass', freq: 900, sweepTo: 2400, Q: 4 });
-    tone(1650, 3.85, 0.14, 0.026, 'square');
-    tone(1070, 4.02, 0.14, 0.026, 'square');
-    noise(4.18, 0.3, 0.05, { type: 'bandpass', freq: 2200, sweepTo: 1100, Q: 5 });
-
-    /* ---- 9. rate negotiation: three ascending pips -------------- */
-    tone(1420, 4.52, 0.055, 0.032, 'square');
-    tone(1700, 4.6, 0.055, 0.032, 'square');
-    tone(1980, 4.68, 0.07, 0.032, 'square');
-
-    /* ---- 10. final burst. Dense, scrambled. --------------------- */
-    noise(4.8, 0.34, 0.05, { type: 'bandpass', freq: 1600, sweepTo: 900, Q: 2.5 });
-    tone(1240, 4.8, 0.34, 0.018, 'sawtooth', 880);
-    noise(5.16, 0.24, 0.038, { type: 'highpass', freq: 2000, Q: 1 });
-
-    /* ---- 11. carrier established, then the tube settles --------- */
-    noise(5.44, 0.42, 0.02, { type: 'highpass', freq: 2600, Q: 1 });
-    tone(96, 5.7, 0.2, 0.06, 'triangle');
-    tone(180, 5.76, 0.09, 0.03, 'square');
-
-    /* Nothing to clean up on the happy path: every node stops itself. The
-       timer only exists so the returned cancel has something to clear. */
-    timers.push(window.setTimeout(() => undefined, 6100));
-
-    return () => {
-      for (const t of timers) window.clearTimeout(t);
-      const cutoff = ctx.currentTime;
-      for (const node of nodes) {
-        try {
-          node.stop(cutoff);
-        } catch {
-          /* already stopped */
-        }
-      }
-      if (this.handshakeTimer !== null) {
-        window.clearTimeout(this.handshakeTimer);
-        this.handshakeTimer = null;
-      }
-    };
+      return Object.assign(cancel, { duration: handle.duration });
+    } catch {
+      return noop;
+    }
   }
 
-  /** A short burst of line noise. Used when the carrier re-establishes. */
+  /** Stop a handshake that is still running. */
+  hangUp(): void {
+    this.activeHandshake?.cancel();
+    this.activeHandshake = null;
+  }
+
+  /**
+   * A short acknowledgement that the carrier is back.
+   *
+   * Previously defined and never called. It has a use now: marking a reconnect
+   * without the ceremony of a full handshake.
+   */
   carrier(): void {
-    if (!this.enabled || !this.ctx || !this.master || !this.noiseBuffer) return;
-
-    const ctx = this.ctx;
-    const start = ctx.currentTime + 0.01;
-
-    const src = ctx.createBufferSource();
-    src.buffer = this.noiseBuffer;
-    src.loop = true;
-
-    const band = ctx.createBiquadFilter();
-    band.type = 'bandpass';
-    band.frequency.value = 1800;
-    band.Q.value = 1.2;
-
-    const env = ctx.createGain();
-    env.gain.setValueAtTime(0.0001, start);
-    env.gain.exponentialRampToValueAtTime(0.035, start + 0.03);
-    env.gain.exponentialRampToValueAtTime(0.0001, start + 0.3);
-
-    src.connect(band);
-    band.connect(env);
-    env.connect(this.master);
-    src.start(start);
-    src.stop(start + 0.34);
+    if (!this.enabled || !this.ctx) return;
+    this.play('realm');
   }
 
   /** Release the context. Called on unmount. */
   dispose(): void {
-    if (this.handshakeTimer !== null) {
-      window.clearTimeout(this.handshakeTimer);
-      this.handshakeTimer = null;
-    }
+    this.hangUp();
+    this.stopAmbience();
     void this.ctx?.close().catch(() => undefined);
     this.ctx = null;
-    this.master = null;
-    this.noiseBuffer = null;
+    this.bus = null;
+    this.lastPlayed.clear();
   }
 }
 

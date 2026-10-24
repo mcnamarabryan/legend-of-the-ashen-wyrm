@@ -44,12 +44,29 @@ export interface WirePrompt {
   hint?: string;
 }
 
+/**
+ * LIVE TEXT ENTRY — see the client copy of this interface for the reasoning.
+ *
+ * The name step accumulates keystrokes on the server, so the server must tell
+ * the browser what has been typed. There is no client-side input buffer: the
+ * single-mutation-path rule holds, and a keypress still only ever means
+ * "the player pressed this".
+ */
+export interface WireEntry {
+  label: string;
+  value: string;
+  hint?: string;
+  max?: number;
+}
+
 export interface Screen {
   view: string;
   lines: CombatLine[];
   character: HeaderCharacter | null;
   prompt: WirePrompt | null;
   menu: MenuEntry[] | null;
+  /** Live text entry, or null when no field is being filled in. */
+  entry: WireEntry | null;
   slots: SlotSummary[];
   feed: string[];
 }
