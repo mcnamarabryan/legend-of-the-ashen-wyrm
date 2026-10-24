@@ -30,6 +30,16 @@ export interface HeaderCharacter {
   turnsRemaining: number;
   weaponPower: number;
   armorPower: number;
+  /**
+   * The equipped item ids.
+   *
+   * Sent so the client can pick the right combat sound for the kit — steel
+   * against a chop against a crush. An id is a name; the server sends no stats
+   * beyond the two power numbers the header already displays, so this leaks
+   * nothing a player could use to compute an outcome.
+   */
+  weaponId: string;
+  armorId: string;
   retired: boolean;
 }
 

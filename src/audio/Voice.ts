@@ -10,16 +10,47 @@
  * this file must depend on nothing.
  */
 
-/** Every sound the game can make. Referenced by name from `cues.ts`. */
+/**
+ * Every sound the game can make. Referenced by name from `cues.ts`.
+ *
+ * COMBAT IS NOT ONE SOUND. `hit`, `crit` and `hurt` are the generic fallbacks,
+ * and each has a *family* of variants selected from the player's kit:
+ *
+ *   hit-blade / crit-blade        steel on steel: bright, ringing, fast
+ *   hit-axe   / crit-axe          a chop: heavy, splintering, dead
+ *   hit-blunt / crit-blunt        a crush: low, dull, no ring at all
+ *   hit-finesse / crit-finesse    a stab: thin, quick, almost a whisper
+ *   hit-magic / crit-magic        arcane discharge: tone, not impact
+ *
+ *   hurt-cloth / hurt-leather / hurt-chain / hurt-plate
+ *
+ * Armour decides the sound of *being* hit, because that is the thing the blow
+ * actually strikes. A sword into rags and a sword into plate are different
+ * events, and the ear should know which one just happened.
+ */
 export type SoundName =
   | 'key'
   | 'select'
   | 'back'
   | 'deny'
   | 'hit'
+  | 'hit-blade'
+  | 'hit-axe'
+  | 'hit-blunt'
+  | 'hit-finesse'
+  | 'hit-magic'
   | 'miss'
   | 'crit'
+  | 'crit-blade'
+  | 'crit-axe'
+  | 'crit-blunt'
+  | 'crit-finesse'
+  | 'crit-magic'
   | 'hurt'
+  | 'hurt-cloth'
+  | 'hurt-leather'
+  | 'hurt-chain'
+  | 'hurt-plate'
   | 'dodge'
   | 'loot'
   | 'coin'

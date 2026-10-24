@@ -723,9 +723,21 @@ export function startAmbience(
       release(prev);
     }
 
+    /*
+     * The scene envelope goes to UNITY, not to `level`.
+     *
+     * This is the bug that made the room tone inaudible everywhere. `level` is
+     * the master ambience setting, and `master.gain` already applies it. Ramping
+     * the scene envelope to `level` as well squared the value: at a setting of
+     * 0.10 the beds reached the bus at 0.01 × 0.21 ≈ 0.002, which is silence
+     * with extra steps.
+     *
+     * The scene envelope is a *crossfade* control — 0 while fading in, 1 while
+     * playing — and nothing else. One number, one place.
+     */
     next.gain.gain.cancelScheduledValues(now);
     next.gain.gain.setValueAtTime(SILENCE, now);
-    next.gain.gain.exponentialRampToValueAtTime(level || SILENCE, now + CROSSFADE_S);
+    next.gain.gain.exponentialRampToValueAtTime(1, now + CROSSFADE_S);
 
     next.wet.gain.cancelScheduledValues(now);
     next.wet.gain.setValueAtTime(SILENCE, now);
@@ -760,13 +772,13 @@ export function startAmbience(
       /* A long ramp. Ambience that snaps in is a jump scare. */
       master.gain.setTargetAtTime(level, now, 0.7);
 
-      /* Keep the live scene in step, so a later crossfade fades to the right
-         target rather than to whatever this was at construction. */
-      if (current && !current.stopped) {
-        const g = current.gain.gain;
-        g.cancelScheduledValues(now);
-        g.setTargetAtTime(Math.max(SILENCE, level), now, 0.7);
-      }
+      /*
+       * Deliberately does NOT touch `current.gain`.
+       *
+       * That gain is the crossfade envelope and holds at unity while a scene
+       * plays. Writing `level` into it too applies the level twice — the same
+       * mistake as the fade-in had, from the other direction.
+       */
     },
 
     setScene,

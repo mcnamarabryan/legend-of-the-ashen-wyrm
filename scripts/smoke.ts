@@ -114,8 +114,20 @@ async function main(): Promise<void> {
   );
   check(
     'menu covers the core commands',
-    ['F', 'I', 'B', 'S', 'D'].every((k) => (created.menu ?? []).some((m) => m.key === k)),
+    ['F', 'I', 'K', 'S', 'D'].every((k) => (created.menu ?? []).some((m) => m.key === k)),
     JSON.stringify((created.menu ?? []).map((m) => m.key)),
+  );
+  /*
+   * Bank is `K`, and `B` means Back everywhere. That is not a cosmetic change:
+   * one key cannot be both "open the bank" and "go back", so the hub had to give
+   * one of them up. Back keeps `B` because it is used on every screen; Bank moves
+   * to `K` because it is used in one place.
+   */
+  check(
+    'bank is K and Back owns B',
+    (created.menu ?? []).some((m) => m.key === 'K' && m.label === 'Bank') &&
+      !(created.menu ?? []).some((m) => m.key === 'B'),
+    JSON.stringify((created.menu ?? []).map((m) => `${m.key}:${m.label}`)),
   );
 
   /* ---- the reported bug --------------------------------------- */
@@ -143,24 +155,52 @@ async function main(): Promise<void> {
   );
 
   /* ---- leaving the inn ---------------------------------------- */
-  await send(token, 'escape');
+  await send(token, 'b');
   const inn = await send(token, 'i');
   check('inn opens', inn.view === 'inn', inn.view);
   check(
-    'inn offers an exit key',
-    (inn.prompt?.keys ?? []).some((k) => k === 'escape'),
+    'inn offers Back as a key',
+    (inn.prompt?.keys ?? []).some((k) => k === 'b'),
     JSON.stringify(inn.prompt?.keys),
   );
-  /* The reported bug: the footer read "t [ESCAPE] Talk to Wren ESC leaves the
-     inn" — one key unbracketed, and ESC named three times. The prompt must
-     list each key once and carry no hint that repeats the key list. */
+  /* The footer must list each key once, with no hint repeating it. */
   check(
-    'inn prompt does not repeat ESC in a hint',
+    'inn prompt does not repeat Back in a hint',
     !/esc/i.test(inn.prompt?.hint ?? ''),
     JSON.stringify(inn.prompt),
   );
-  const left = await send(token, 'escape');
-  check('ESC leaves the inn', left.view === 'hub', left.view);
+  const left = await send(token, 'b');
+  check('B leaves the inn', left.view === 'hub', left.view);
+
+  /* ---- the bank on its new key --------------------------------- */
+  const bank = await send(token, 'k');
+  check('K opens the bank', bank.view === 'bank', bank.view);
+  const banked = await send(token, 'b');
+  check('B leaves the bank', banked.view === 'hub', banked.view);
+
+  /* ---- Back in the square is harmless -------------------------- */
+  const already = await send(token, 'b');
+  check(
+    'B in the hub says so rather than doing something odd',
+    already.view === 'hub' &&
+      already.lines.some((l) => l.text.toLowerCase().includes('already in the square')),
+    already.lines.map((l) => l.text).join(' | '),
+  );
+
+  /* ---- the loadout reaches the client ------------------------- */
+  /*
+   * The header now carries the equipped item ids so the browser can choose the
+   * right combat sound. They must be *names*, not stats — the wire is not
+   * allowed to tell a player anything they could use to compute an outcome.
+   */
+  const header = created.character as unknown as { weaponId?: string; armorId?: string };
+  check('header carries the weapon id', typeof header.weaponId === 'string', String(header.weaponId));
+  check('header carries the armor id', typeof header.armorId === 'string', String(header.armorId));
+  check(
+    'a new warrior starts with the dagger and rags',
+    header.weaponId === 'rusty-dagger' && header.armorId === 'rags',
+    `${header.weaponId}/${header.armorId}`,
+  );
 
   /* ---- the boundary -------------------------------------------- */
   const source = await fetch(`${BASE}/api/session`, { method: 'POST', body: '{}' });

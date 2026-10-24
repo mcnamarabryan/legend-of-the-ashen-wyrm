@@ -149,7 +149,23 @@ function renderVoice(
     ? voice.at + (Math.random() * 2 - 1) * voice.atJitter
     : voice.at;
 
-  const start = when + Math.max(0, drift0);
+  /*
+   * CLAMP INTO THE FUTURE, NEVER INTO THE PAST.
+   *
+   * `start` used to be `when + Math.max(0, drift0)`, which handles a negative
+   * *offset* but not the case that actually bites: `when` is `ctx.currentTime +
+   * 0.006`, and if the main thread stalls for a frame or two between building
+   * the graph and calling `start()`, the computed time is already behind the
+   * audio clock. Scheduling in the past makes the browser start the source
+   * immediately at an arbitrary phase — for a 12 ms noise transient that is
+   * indistinguishable from silence, and it happens most often when the player is
+   * typing fast, which is exactly when they are listening for the click.
+   *
+   * A small floor keeps every source comfortably ahead of the clock. Six
+   * milliseconds is inaudible as latency and is longer than any realistic
+   * scheduling stall.
+   */
+  const start = Math.max(when + Math.max(0, drift0), ctx.currentTime + 0.006);
   const end = start + Math.max(0.01, voice.dur);
 
   const attack = Math.max(0.0005, voice.attack ?? 0.006);
@@ -304,7 +320,17 @@ function renderVoice(
       node = filter;
     }
 
-    noiseGain.gain.setValueAtTime(voice.noise * 0.9, start);
+    /*
+     * The noise layer must be trimmed like the tonal layer is.
+     *
+     * `peak` folds in `trim`, but the noise path used the raw `voice.noise`
+     * value — so a design whose trim was lowered to quieten it still had its
+     * noise at full level. In the keyclick that meant the two noise transients,
+     * the loudest and shortest part of the stack, completely ignored the
+     * design's own level control. Trimming here makes `trim` mean what its
+     * comment claims: everything in the voice moves together.
+     */
+    noiseGain.gain.setValueAtTime(voice.noise * 0.9 * trim, start);
     node.connect(noiseGain);
 
     /* Random offset into the shared buffer so repeats differ. */

@@ -34,7 +34,7 @@ import { buildBus, renderSound, type RenderContext } from './render';
 import { makeImpulse } from './waves';
 import { scheduleHandshake, type HandshakeHandle } from './handshake';
 import { startAmbience, type AmbienceHandle, type AmbienceScene } from './ambience';
-import { sceneForLocation } from './scenes';
+import { sceneForLocation, AMBIENCE_LEVEL } from './scenes';
 
 export type { SoundName };
 export { DESIGNS, SOUND_NAMES } from './catalogue';
@@ -42,14 +42,25 @@ export { DESIGNS, SOUND_NAMES } from './catalogue';
 /**
  * Master level.
  *
- * Chosen so the loudest design (a critical hit plus its reverb tail) peaks near
- * −6 dBFS with the volume control at full. The compressor is a safety net, not a
- * mixing crutch — if it is working hard on normal play, this number is too high.
+ * Raised to unity. The previous 0.82 — combined with an 0.8 default volume —
+ * put ordinary effects around −30 dBFS, which is audible on headphones and
+ * effectively silent on a laptop, the most common way this game is played. The
+ * catalogue's own per-voice budget still leaves the compressor plenty of room,
+ * so the correction belongs here rather than in every individual design.
+ *
+ * The compressor remains a safety net: it engages only when a level-up lands on
+ * top of a critical hit.
  */
-const MASTER_LEVEL = 0.82;
+const MASTER_LEVEL = 1;
 
-/** Default listening level. Loud enough to feel, quiet enough not to startle. */
-const DEFAULT_VOLUME = 0.8;
+/**
+ * Default listening level — the top step.
+ *
+ * Same reasoning as above. A player who finds it too loud can step down; a
+ * player who finds it too quiet assumes the game is broken and leaves. Defaults
+ * should favour the failure mode the player can fix in one click.
+ */
+const DEFAULT_VOLUME = 1;
 
 export class SoundEngine {
   private ctx: AudioContext | null = null;
@@ -59,6 +70,14 @@ export class SoundEngine {
 
   /** Per-sound throttle timestamps, keyed by name. */
   private lastPlayed = new Map<SoundName, number>();
+  /**
+   * Failures already reported, so a broken sound warns once and then shuts up.
+   *
+   * Without this a single renderer fault would log on every keystroke — fifty
+   * messages a minute, burying everything else — and the natural fix would be
+   * to delete the warning again, returning us to an undiagnosable silence.
+   */
+  private reported = new Set<string>();
   /** The live handshake, so a second call does not layer two modems. */
   private activeHandshake: HandshakeHandle | null = null;
   /** The ambient bed. Created on unlock, released on mute or dispose. */
@@ -76,12 +95,16 @@ export class SoundEngine {
   private ambienceScene: AmbienceScene = 'machine';
 
   /**
-   * How loud the bed sits.
+   * How loud the bed sits — sourced from `AMBIENCE_LEVEL` in `scenes.ts`.
    *
-   * Roughly a tenth of a keyclick. The test is simple: if you notice the
-   * ambience as a *feature* rather than as a room, this is too high.
+   * It lives there, not here, so the mix can be asserted against the catalogue
+   * without constructing an AudioContext. The number was 0.85 and that was a
+   * mixing bug, not a taste call: the beds sum to ~0.21, so 0.85 put ~0.18 of
+   * wind on the bus against a keyclick stack peaking at 0.083. The room was more
+   * than twice as loud as the keys, which is exactly what "I can't hear the
+   * keyboard" sounds like. At 0.12 the bed is audible only when it stops.
    */
-  private static readonly AMBIENCE_LEVEL = 0.85;
+  private static readonly AMBIENCE_LEVEL = AMBIENCE_LEVEL;
 
   /**
    * True once a real AudioContext exists.
@@ -101,6 +124,17 @@ export class SoundEngine {
     return this.ctx?.state ?? 'none';
   }
 
+  /**
+   * The device sample rate, or 0 before the context exists.
+   *
+   * Surfaced in the settings panel because it is the fastest way to separate an
+   * audio problem from a volume problem: no rate means no context, and no
+   * context means the browser never granted permission to make sound.
+   */
+  get sampleRate(): number {
+    return this.ctx?.sampleRate ?? 0;
+  }
+
   get currentVolume(): VolumeStep {
     return this.volume;
   }
@@ -109,6 +143,13 @@ export class SoundEngine {
    * Create or resume the context. Must be called from a user gesture the first
    * time. Returns false if the browser offers no audio at all, which is not an
    * error — a game that cannot make sound should still play.
+   *
+   * Idempotent, and safe to call on every keypress. The critical detail: it
+   * always attempts `resume()` whenever the context is not already running. An
+   * existing context is NOT the same as a running one, and a context built before
+   * the player's first gesture stays suspended until something resumes it.
+   * Assuming "we already have a context, so we are fine" is exactly the
+   * assumption that silenced this game.
    */
   unlock(): boolean {
     if (typeof window === 'undefined') return false;
@@ -127,9 +168,12 @@ export class SoundEngine {
 
       /* Fire and forget. Callers must not wait on this — anything scheduled now
          plays when the promise settles. */
-      if (this.ctx.state === 'suspended') {
+      if (this.ctx.state !== 'running') {
         void this.ctx.resume().catch(() => undefined);
       }
+
+      /* A live context can finally carry the room tone, if one is wanted. */
+      this.startAmbienceIfWanted();
 
       this.applyVolume();
       return true;
@@ -188,8 +232,9 @@ export class SoundEngine {
     try {
       this.ambience = startAmbience(ctx, bus.master, this.ambienceScene);
       this.ambience.setLevel(SoundEngine.AMBIENCE_LEVEL);
-    } catch {
+    } catch (err) {
       this.ambience = null;
+      this.report('room tone', err);
     }
   }
 
@@ -243,27 +288,41 @@ export class SoundEngine {
    * Separate from the master mute on purpose. Some players want the effects and
    * not the drone; forcing them to choose both or neither is the kind of false
    * economy that makes people turn sound off entirely.
+   *
+   * NOTE: this records the preference and does not itself construct a context.
+   * Calling `unlock()` from a settings effect runs at mount, before any user
+   * gesture, and the browser then hands back a *suspended* context that nothing
+   * ever resumes — which is how the game ended up completely silent. The bed is
+   * started from `unlock()`, once a real gesture has happened.
    */
   setAmbienceEnabled(on: boolean): void {
     this.ambienceEnabled = on;
     this.ambienceWanted = on;
 
-    if (on) {
-      this.unlock();
-      this.startAmbienceIfWanted();
-    } else {
+    if (!on) {
       this.stopAmbience();
+      return;
     }
+
+    /* Only start it if a gesture has already given us a usable context. */
+    if (this.ctx) this.startAmbienceIfWanted();
   }
 
   get isAmbienceEnabled(): boolean {
     return this.ambienceEnabled;
   }
 
-  /** Turn sound on or off. Turning it on unlocks, because that IS a gesture. */
+  /**
+   * Turn sound on or off.
+   *
+   * Enabling does NOT construct a context here. This is called from a settings
+   * effect at mount, before any gesture, and a context created then is handed
+   * back suspended with nothing to resume it — the exact failure that made the
+   * game silent. The context is created by `unlock()`, which only ever runs from
+   * a real keypress or click.
+   */
   setEnabled(on: boolean): void {
     this.enabled = on;
-    if (on) this.unlock();
     this.applyVolume();
 
     /*
@@ -274,8 +333,12 @@ export class SoundEngine {
      * player who has muted the game is pure waste — and on a laptop it is
      * battery. Tear it down and rebuild on unmute.
      */
-    if (!on) this.stopAmbience();
-    else this.startAmbienceIfWanted();
+    if (!on) {
+      this.stopAmbience();
+      return;
+    }
+
+    if (this.ctx) this.startAmbienceIfWanted();
   }
 
   /** Set listening level, quantised to perceptual steps. */
@@ -328,13 +391,36 @@ export class SoundEngine {
 
     try {
       renderSound(bus, design, ctx.currentTime + 0.006, { detune: jitter, pan });
-    } catch {
+    } catch (err) {
       /*
-       * A single bad design must never take down input handling. Swallow it: a
-       * silent frame the player never notices beats an exception thrown inside
-       * a keydown handler.
+       * A single bad design must never take down input handling — but it must
+       * not be invisible either.
+       *
+       * This catch used to be entirely empty, which is exactly why "sound isn't
+       * working" was impossible to diagnose from the console: a throw in the
+       * renderer produced total silence with no trace of its cause. The sound
+       * still fails quietly for the player; the developer now gets told once.
        */
+      this.report(`sound "${name}"`, err);
     }
+  }
+
+  /**
+   * Record a non-fatal audio fault, once per kind.
+   *
+   * Audio failures here are recoverable by design — a broken reverb must not
+   * stop a sword hit — so everything is caught. The problem with catching
+   * silently is that the *whole engine* can be failing and the only symptom is
+   * quiet. One line per distinct fault turns an unsolvable report into a
+   * one-glance answer, and the dedupe keeps a per-keystroke fault from flooding
+   * the console.
+   */
+  private report(what: string, err: unknown): void {
+    const message = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+    const key = `${what}::${message}`;
+    if (this.reported.has(key)) return;
+    this.reported.add(key);
+    console.warn(`[audio] ${what} failed — ${message}`);
   }
 
   /* ------------------------------------------------------------------ */
@@ -370,9 +456,72 @@ export class SoundEngine {
       };
 
       return Object.assign(cancel, { duration: handle.duration });
-    } catch {
+    } catch (err) {
+      /*
+       * A silent no-op keeps the boot screen usable, but returning one without a
+       * word is how a broken modem hides: `duration: 0` makes the shell skip the
+       * handshake entirely, so the carrier line appears instantly and nothing is
+       * ever heard. Report the cause.
+       */
+      this.report('modem handshake', err);
       return noop;
     }
+  }
+
+  /**
+   * Play every sound, in order, so a player can hear precisely which parts work.
+   *
+   * This exists because silence is undiagnosable from outside. Three unrelated
+   * faults — audio switched off, the context blocked by the browser, one broken
+   * design — present identically as "no sound". Sweeping the catalogue turns that
+   * into a specific answer in about six seconds.
+   *
+   * The per-sound throttle is cleared before each play, deliberately: a test that
+   * silently drops half its own subjects is not a test.
+   */
+  testAll(): void {
+    if (!this.ctx) this.unlock();
+    if (!this.ctx || !this.enabled) return;
+
+    const order: SoundName[] = [
+      'key',
+      'select',
+      'back',
+      'deny',
+      'hit',
+      'crit',
+      'miss',
+      'hurt',
+      'dodge',
+      'spell',
+      'loot',
+      'coin',
+      'heal',
+      'level',
+      'death',
+      'wyrm',
+      'realm',
+    ];
+
+    order.forEach((name, index) => {
+      window.setTimeout(() => {
+        this.lastPlayed.delete(name);
+        this.play(name);
+      }, index * 340);
+    });
+  }
+
+  /**
+   * True when the ambient bed is actually running.
+   *
+   * Distinct from `state === 'running'`, which only says the browser started
+   * audio. The bed has its own lifecycle — a dozen oscillators and two looping
+   * noise sources that can fail to build while the context is perfectly healthy.
+   * The settings panel uses this to tell "audio works, room is off" apart from
+   * "nothing works".
+   */
+  get ambienceLive(): boolean {
+    return this.ambience !== null;
   }
 
   /** Stop a handshake that is still running. */

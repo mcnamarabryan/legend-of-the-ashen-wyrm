@@ -30,6 +30,16 @@ export interface HeaderCharacter {
   turnsRemaining: number;
   weaponPower: number;
   armorPower: number;
+  /**
+   * The item ids currently equipped.
+   *
+   * Carried so the client can choose the right combat *sound* — steel, a chop,
+   * a crush, a stab — without duplicating item stats. An id is a name, not a
+   * rule: it tells the browser which of its own sound designs to use and
+   * nothing about damage, price or progression. The boundary holds.
+   */
+  weaponId: string;
+  armorId: string;
   retired: boolean;
 }
 

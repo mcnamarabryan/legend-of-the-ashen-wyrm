@@ -29,12 +29,16 @@ npm run client   # Vite, on :5173, proxying /api to the server
 Keyboard only. Any keypress skips the typewriter; the next keypress acts.
 
 ```
-[F] Forest    [I] Inn       [B] Bank      [S] Shop
+[F] Forest    [I] Inn       [K] Bank      [S] Shop
 [H] Healer    [C] Character [W] Who's Who [P] Attack
-[D] Wyrm      [Q] Quit      [?] Help      [ESC] Back
+[D] Wyrm      [Q] Quit      [?] Help      [B] Back
 ```
 
-Typing is a mechanical keyboard, not a beep — see §Audio.
+Bank is `K` because `B` is Back on every screen. One key, one meaning.
+
+Typing is a mechanical keyboard, not a beep — see §Audio. Combat sounds are
+chosen by your kit: a dagger, a sword, an axe, a hammer and a wand are separate
+designs, not one sound transposed — see §Combat by loadout.
 
 ---
 

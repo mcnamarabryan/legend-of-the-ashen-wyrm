@@ -367,7 +367,23 @@ export class Realm {
     });
 
     /* ---- global keys ------------------------------------------- */
-    if (k === 'escape' && session.view.kind !== 'title' && session.view.kind !== 'create') {
+
+    /*
+     * BACK IS `B`, NOT `ESC`.
+     *
+     * `b` had been the Bank shortcut in the hub, so Bank moved to `k`. Keeping
+     * both meanings on one key would have made the hub ambiguous — pressing `b`
+     * in the square would be simultaneously "go back (nowhere)" and "open the
+     * bank" — so each key now means exactly one thing.
+     *
+     * `escape` remains a silent alias. It costs nothing, it is what muscle
+     * memory reaches for, and the settings dialog already uses it.
+     */
+    const isBack = k === 'b' || k === 'escape';
+    if (isBack && session.view.kind !== 'title' && session.view.kind !== 'create') {
+      if (session.view.kind === 'hub') {
+        return say('{dim}You are already in the square.{/}', 'dim');
+      }
       session.view = { kind: 'hub' };
       return { lines: [] };
     }
@@ -495,7 +511,7 @@ export class Realm {
             return applyStep(flow.forestTurn(ctx(c)));
           case 'i':
             return applyStep(flow.openInn(ctx(c)));
-          case 'b':
+          case 'k':
             return applyStep(flow.openBank(ctx(c)));
           case 's':
             return applyStep(flow.openShop(ctx(c)));
@@ -641,6 +657,9 @@ function headerCharacter(c: Character) {
     turnsRemaining: c.turnsRemaining,
     weaponPower: itemById(c.weaponId).power,
     armorPower: itemById(c.armorId).power,
+    /* Names, not numbers: the browser uses these to pick a combat sound. */
+    weaponId: c.weaponId,
+    armorId: c.armorId,
     retired: c.retired,
   };
 }
@@ -648,7 +667,7 @@ function headerCharacter(c: Character) {
 export const HUB_MENU = [
   { key: 'F', label: 'Fight' },
   { key: 'I', label: 'Inn' },
-  { key: 'B', label: 'Bank' },
+  { key: 'K', label: 'Bank' },
   { key: 'S', label: 'Shop' },
   { key: 'H', label: 'Healer' },
   { key: 'C', label: 'Character' },
@@ -665,10 +684,13 @@ export const HUB_MENU = [
  * This used to fall through to a catch-all `{ keys: ['escape'] }`, so EVERY
  * screen had a prompt object and the footer preferred it over the menu — the
  * hub could never show its own menu. `null` is the fix, not a shortcut.
+ *
+ * `b` is now in every sub-screen's key list because Back is `b`. It is listed
+ * once, never in a hint as well, so the footer cannot say the same thing twice.
  */
 function promptFor(view: flowView): Screen['prompt'] {
   switch (view.kind) {
-    /* Screens with no question: the shell shows the menu, or the ESC hint. */
+    /* Screens with no question: the shell shows the menu, or the Back hint. */
     case 'title':
     case 'hub':
     case 'character':
@@ -684,27 +706,26 @@ function promptFor(view: flowView): Screen['prompt'] {
           : { label: 'Choose a class', keys: ['w', 'm', 't'] };
 
     case 'forest':
-      return { label: 'Answer', keys: ['y', 'n'] };
+      return { label: 'Answer', keys: ['y', 'n', 'b'] };
 
     /* The label carries the detail; the key list stays short enough to read. */
     case 'shop':
-      return { label: 'Buy with 1-9', keys: ['w', 'a', 'x', 'z', 'escape'] };
+      return { label: 'Buy with 1-9', keys: ['w', 'a', 'x', 'z', 'b'] };
 
     case 'bank':
-      return { label: 'Deposit / withdraw', keys: ['d', 'w', 'escape'] };
+      return { label: 'Deposit / withdraw', keys: ['d', 'w', 'b'] };
 
     case 'healer':
       return { label: 'Pay for healing?', keys: ['y', 'n'] };
 
     case 'inn':
-      /* `escape` is already in the key list, so it needs no hint repeating it. */
-      return { label: 'Talk to Wren', keys: ['t', 'escape'] };
+      return { label: 'Talk to Wren', keys: ['t', 'b'] };
 
     case 'pvp':
-      return { label: 'Choose a target', keys: ['1-9', 'escape'] };
+      return { label: 'Choose a target', keys: ['1-9', 'b'] };
 
     case 'dragon':
-      return { label: 'Face the wyrm?', keys: ['y', 'n'], hint: 'R retire · C continue' };
+      return { label: 'Face the wyrm?', keys: ['y', 'n', 'b'], hint: 'R retire · C continue' };
   }
 }
 

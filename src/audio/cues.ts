@@ -17,10 +17,72 @@
  * SILENCE IS THE DEFAULT. Most lines earn no sound at all. A terminal that beeps
  * at every sentence is an unpleasant terminal, and the moments that *do* make
  * noise are only meaningful because the ones around them do not.
+ *
+ * COMBAT IS LOADOUT-AWARE. The scored sound for a blow depends on the weapon in
+ * the player's hand and the armour they are wearing — a dagger and a war hammer
+ * should not make the same noise. `soundsForBatch` takes an optional profile and
+ * swaps the generic `hit`/`crit`/`hurt` for the matching variant.
  */
 
 import type { ClientLine } from '../state/client';
 import type { SoundName } from './SoundEngine';
+
+/**
+ * Which families the player's kit belongs to.
+ *
+ * Derived from the item ids the server already sends in the header — no new
+ * field on the wire, no duplication of item tables. The ids are stable public
+ * identifiers (`runed-blade`, `plate-mail`), so mapping them here keeps the
+ * client free of game data while still letting it choose a sword from a hammer.
+ */
+export type WeaponFamily = 'blade' | 'axe' | 'blunt' | 'finesse' | 'magic';
+export type ArmorFamily = 'cloth' | 'leather' | 'chain' | 'plate';
+
+export interface CombatProfile {
+  weapon: WeaponFamily;
+  armor: ArmorFamily;
+}
+
+const WEAPON_BY_ID: Record<string, WeaponFamily> = {
+  'rusty-dagger': 'finesse',
+  'weak-wand': 'magic',
+  'short-sword': 'blade',
+  'long-sword': 'blade',
+  'two-handed-sword': 'blade',
+  'runed-blade': 'magic',
+  'hand-axe': 'axe',
+  'war-hammer': 'blunt',
+  'cursed-blade': 'finesse',
+};
+
+const ARMOR_BY_ID: Record<string, ArmorFamily> = {
+  rags: 'cloth',
+  'cloth-robes': 'cloth',
+  leather: 'leather',
+  'chain-mail': 'chain',
+  'scale-mail': 'chain',
+  'plate-mail': 'plate',
+  'dragon-scale': 'plate',
+};
+
+/** A sensible default before the character exists. */
+export const DEFAULT_PROFILE: CombatProfile = { weapon: 'blade', armor: 'cloth' };
+
+/**
+ * What the player is holding, from the ids the header already carries.
+ *
+ * Unknown ids fall back rather than throwing: a renamed item should degrade to a
+ * generic sword sound, not silence the whole fight.
+ */
+export function profileFromLoadout(
+  weaponId: string | null | undefined,
+  armorId: string | null | undefined,
+): CombatProfile {
+  return {
+    weapon: (weaponId && WEAPON_BY_ID[weaponId]) || 'blade',
+    armor: (armorId && ARMOR_BY_ID[armorId]) || 'cloth',
+  };
+}
 
 interface Rule {
   sound: SoundName;
@@ -137,12 +199,61 @@ export function soundForLine(line: ClientLine): SoundName | null {
   return null;
 }
 
+/* ------------------------------------------------------------------ */
+/* Loadout-aware variants                                             */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The specific sound for a blow, given the player's kit.
+ *
+ * Every variant is a full design in the catalogue, not a filter applied at
+ * runtime: a hammer is a low wooden crush and a dagger is a fast bright hiss,
+ * and those are different *shapes*, not one shape transposed.
+ */
+function variantFor(base: SoundName, profile: CombatProfile): SoundName {
+  const { weapon, armor } = profile;
+
+  if (base === 'hurt') {
+    /* Armour changes the sound of being hit far more than the weapon does. */
+    switch (armor) {
+      case 'plate':
+        return 'hurt-plate';
+      case 'chain':
+        return 'hurt-chain';
+      case 'leather':
+        return 'hurt-leather';
+      default:
+        return 'hurt-cloth';
+    }
+  }
+
+  if (base === 'hit' || base === 'crit') {
+    switch (weapon) {
+      case 'axe':
+        return base === 'crit' ? 'crit-axe' : 'hit-axe';
+      case 'blunt':
+        return base === 'crit' ? 'crit-blunt' : 'hit-blunt';
+      case 'finesse':
+        return base === 'crit' ? 'crit-finesse' : 'hit-finesse';
+      case 'magic':
+        return base === 'crit' ? 'crit-magic' : 'hit-magic';
+      default:
+        return base === 'crit' ? 'crit-blade' : 'hit-blade';
+    }
+  }
+
+  return base;
+}
+
 /**
  * Severity ranking, so a batch yields one impact rather than a drum solo.
  *
  * A single fight produces a dozen damage lines. Playing a thud for every one
  * turns a two-second exchange into a machine-gun. The ear needs one impact per
  * exchange — the loudest one — and the narrative carries the rest.
+ *
+ * Ranked by the *base* sound, so a plate-armoured `hurt` outranks a blade hit
+ * exactly as `hurt` did before the variants existed.
  */
 const SEVERITY: Partial<Record<SoundName, number>> = {
   miss: 0,
@@ -152,22 +263,37 @@ const SEVERITY: Partial<Record<SoundName, number>> = {
   crit: 4,
 };
 
-export function soundsForBatch(lines: ClientLine[]): SoundName[] {
+/** Map a variant back to the base it came from, for severity lookup. */
+export function baseOf(sound: SoundName): SoundName {
+  if (sound.startsWith('hit-')) return 'hit';
+  if (sound.startsWith('crit-')) return 'crit';
+  if (sound.startsWith('hurt-')) return 'hurt';
+  return sound;
+}
+
+export function soundsForBatch(lines: ClientLine[], profile?: CombatProfile): SoundName[] {
+  const kit = profile ?? DEFAULT_PROFILE;
   const rare: SoundName[] = [];
   let combat: SoundName | null = null;
+  let bestRank = -1;
 
   for (const line of lines) {
-    const s = soundForLine(line);
-    if (!s) continue;
+    const scored = soundForLine(line);
+    if (!scored) continue;
 
-    const rank = SEVERITY[s];
+    const rank = SEVERITY[baseOf(scored)];
+
     if (rank !== undefined) {
-      const best = combat === null ? -1 : (SEVERITY[combat] ?? -1);
-      if (rank > best) combat = s;
+      /* One impact per exchange, and the loudest one wins. */
+      if (rank > bestRank) {
+        bestRank = rank;
+        combat = variantFor(scored, kit);
+      }
       continue;
     }
 
-    if (!rare.includes(s)) rare.push(s);
+    const base = variantFor(scored, kit);
+    if (!rare.includes(base)) rare.push(base);
   }
 
   /*
@@ -190,7 +316,7 @@ export function soundsForBatch(lines: ClientLine[]): SoundName[] {
  */
 export function soundForKey(key: string): SoundName {
   const k = key.toLowerCase();
-  if (k === 'escape') return 'back';
+  if (k === 'escape' || k === 'b') return 'back';
   if (k === 'enter') return 'select';
   return 'key';
 }

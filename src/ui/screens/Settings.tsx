@@ -19,6 +19,39 @@ export interface SettingsPanelProps {
   /** Play a short tone so the player can hear the level they just chose. */
   onPreviewSound(): void;
   onClose(): void;
+  /**
+   * Live audio diagnostics.
+   *
+   * The reason this exists: "sound isn't working" has three very different
+   * causes — the player muted it, the browser refused to start the audio
+   * context, or a sound is genuinely broken — and from the outside they look
+   * identical: silence. Guessing at the fix is what turns a one-minute problem
+   * into a support thread.
+   *
+   * So the panel states the truth: is the context running, at what rate, and
+   * a button that fires every sound in the catalogue so a partial failure is
+   * obvious immediately.
+   */
+  audio: AudioStatus;
+  onTestAllSounds(): void;
+}
+
+/** What the audio engine reports about itself. */
+export interface AudioStatus {
+  /** `none` before the first gesture, then the real AudioContextState. */
+  state: AudioContextState | 'none';
+  /** The device sample rate, or 0 before the context exists. */
+  sampleRate: number;
+  /** Whether a context object exists at all. */
+  unlocked: boolean;
+  /**
+   * Whether the ambient bed is actually running.
+   *
+   * Listed separately from the context because it fails independently: the
+   * context can be running perfectly while the room is silent, which is exactly
+   * what a mis-scaled ambience level looks like from the outside.
+   */
+  ambienceLive: boolean;
 }
 
 /** The steps the engine quantises to, mirrored here for display. */
@@ -47,7 +80,46 @@ export function SettingsPanel({
   onChange,
   onPreviewSound,
   onClose,
+  audio,
+  onTestAllSounds,
 }: SettingsPanelProps) {
+  /*
+   * The single most useful sentence this panel can say.
+   *
+   * Browsers refuse to start an AudioContext outside a user gesture, and some
+   * refuse entirely — Safari inside a cross-origin iframe, a machine with no
+   * output device, a locked-down kiosk. In every one of those cases the game
+   * looks exactly like a game with the volume down, and no amount of cycling
+   * the volume control helps. Stating the context state turns a mystery into a
+   * diagnosis.
+   */
+  const verdict = !settings.sound
+    ? 'Sound is switched off in this panel.'
+    : audio.state === 'none'
+      ? 'Not started yet — press a key in the game to allow audio.'
+      : audio.state === 'suspended'
+        ? 'Blocked by the browser. Press a key in the game to allow audio.'
+        : audio.state === 'running'
+          ? `Running at ${(audio.sampleRate / 1000).toFixed(1)} kHz.`
+          : `Context is ${audio.state}.`;
+
+  /*
+   * The room gets its own verdict, because it fails independently.
+   *
+   * Being able to hear a sword but not the wind is a real state — ambience
+   * switched off, or switched on but failing to build — and reporting only the
+   * context state hid it completely. Two lines, two answers.
+   */
+  const roomVerdict = !settings.sound
+    ? 'Room tone is silent while sound is off.'
+    : !settings.ambience
+      ? 'Room tone is switched off below.'
+      : audio.ambienceLive
+        ? 'Room tone is playing.'
+        : 'Room tone has not started — press a key in the game.';
+
+  const healthy = settings.sound && audio.state === 'running';
+
   return (
     <div className="settings-overlay" role="dialog" aria-modal="true" aria-label="Settings">
       <div className="settings-panel">
@@ -55,6 +127,28 @@ export function SettingsPanel({
           <h2 className="t-bright">SETTINGS</h2>
           <button className="settings-close" onClick={onClose} aria-label="Close settings">
             ESC
+          </button>
+        </div>
+
+        {/*
+          Audio status before any control. This is the answer to "why can't I hear
+          anything?" and it should not require opening a console to find.
+        */}
+        <div className={`audio-status ${healthy ? 'is-healthy' : 'is-unhealthy'}`}>
+          <div className="audio-status-head">
+            <span className={healthy ? 't-bright' : 't-gold'}>AUDIO</span>
+            <span className={`audio-dot ${healthy ? 'is-on' : ''}`} aria-hidden="true" />
+          </div>
+          <p className="audio-status-line t-base">{verdict}</p>
+          <p className="audio-status-line t-dim">{roomVerdict}</p>
+          <button
+            className="audio-test"
+            onClick={onTestAllSounds}
+            disabled={!settings.sound}
+            aria-label="Play every sound in the game"
+          >
+            <span className="t-bright">[ TEST EVERY SOUND ]</span>
+            <span className="t-ghost"> keys, sword, coins, level-up, the modem</span>
           </button>
         </div>
 

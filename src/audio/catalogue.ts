@@ -248,6 +248,486 @@ export const DESIGNS: Record<SoundName, SoundDesign> = {
     ],
   },
 
+  /* ------------------------------------------------------------------ */
+  /* Combat, by weapon family                                            */
+  /* ------------------------------------------------------------------ */
+  /*
+   * WHY THESE ARE SEVEN DESIGNS AND NOT ONE WITH A PARAMETER.
+   *
+   * A sword, an axe, a hammer and a dagger do not differ by pitch. They differ
+   * in *shape*: steel rings and sustains, an axe thuds and stops dead, a hammer
+   * has almost no transient and all body, a dagger is mostly air. Filtering one
+   * design would produce four versions of the same sword, which is worse than
+   * one sword — it draws attention to the fact that the sounds are not real.
+   *
+   * So each family gets its own stack, written from the physical event:
+   *
+   *   blade    bright metallic ring, fast, decays with a ring-out
+   *   axe      a chop: heavy body, splintering noise, no ring
+   *   blunt    a crush: almost all sub-bass and a dull thud, no high end
+   *   finesse  a stab: thin, quick, mostly air and a small point
+   *   magic    a discharge: pitched, singing, no mechanical impact at all
+   */
+
+  /** Steel on steel. The default sword: bright, ringing, quick. */
+  'hit-blade': {
+    trim: 1,
+    jitter: 34,
+    voices: [
+      { at: 0, freq: 210, to: 96, dur: 0.09, wave: 'tri', gain: 0.105, attack: 0.002, falloff: 1.8 },
+      {
+        at: 0,
+        freq: 0,
+        dur: 0.04,
+        gain: 0.072,
+        noise: 1,
+        noiseFilter: { type: 'bandpass', freq: 2800, Q: 0.9 },
+      },
+      /* The ring. Steel keeps ringing after the blow; a hammer does not. */
+      {
+        at: 0.008,
+        freq: 1720,
+        dur: 0.16,
+        wave: 'tri',
+        gain: 0.028,
+        attack: 0.002,
+        falloff: 2,
+        send: 0.1,
+      },
+      { at: 0, freq: 68, to: 52, dur: 0.12, wave: 'sine', gain: 0.05, falloff: 2 },
+    ],
+  },
+
+  /** A heavy chop. Splintering, dead, no ring at all. */
+  'hit-axe': {
+    trim: 1,
+    jitter: 40,
+    voices: [
+      {
+        at: 0,
+        freq: 250,
+        to: 70,
+        dur: 0.13,
+        wave: 'tri',
+        gain: 0.13,
+        attack: 0.0018,
+        falloff: 1.5,
+      },
+      {
+        at: 0,
+        freq: 0,
+        dur: 0.07,
+        gain: 0.075,
+        noise: 1,
+        /* Wide and woody, not bright — the record of an axe is a chop. */
+        noiseFilter: { type: 'bandpass', freq: 1500, Q: 0.7 },
+      },
+      {
+        at: 0.004,
+        freq: 0,
+        dur: 0.05,
+        gain: 0.04,
+        noise: 1,
+        noiseFilter: { type: 'bandpass', freq: 620, Q: 1.6 },
+        attack: 0.002,
+      },
+      { at: 0, freq: 62, to: 45, dur: 0.16, wave: 'sine', gain: 0.06, falloff: 2.1 },
+    ],
+  },
+
+  /** A hammer. Almost no transient, all mass. */
+  'hit-blunt': {
+    trim: 1,
+    jitter: 30,
+    voices: [
+      {
+        at: 0,
+        freq: 118,
+        to: 46,
+        dur: 0.19,
+        wave: 'tri',
+        gain: 0.15,
+        attack: 0.004,
+        falloff: 1.4,
+      },
+      {
+        at: 0,
+        freq: 0,
+        dur: 0.05,
+        gain: 0.055,
+        noise: 1,
+        noiseFilter: { type: 'lowpass', freq: 700, Q: 0.8 },
+      },
+      { at: 0, freq: 52, to: 38, dur: 0.24, wave: 'sine', gain: 0.07, falloff: 1.9 },
+    ],
+  },
+
+  /** A stab. Thin, fast, mostly air. The least sound of any weapon. */
+  'hit-finesse': {
+    trim: 0.95,
+    jitter: 55,
+    voices: [
+      {
+        at: 0,
+        freq: 0,
+        dur: 0.055,
+        gain: 0.07,
+        noise: 1,
+        noiseFilter: { type: 'bandpass', freq: 3100, to: 1700, Q: 1.6 },
+        attack: 0.002,
+      },
+      {
+        at: 0,
+        freq: 320,
+        to: 180,
+        dur: 0.06,
+        wave: 'pulse12',
+        gain: 0.055,
+        attack: 0.002,
+        falloff: 2.4,
+      },
+      { at: 0, freq: 78, to: 60, dur: 0.09, wave: 'sine', gain: 0.038, falloff: 2.3 },
+    ],
+  },
+
+  /** An arcane strike. Pitched, singing. Not an impact from the physical world. */
+  'hit-magic': {
+    trim: 0.95,
+    jitter: 30,
+    voices: [
+      {
+        at: 0,
+        freq: 640,
+        to: 1500,
+        dur: 0.16,
+        wave: 'tri',
+        gain: 0.075,
+        attack: 0.006,
+        falloff: 2,
+        send: 0.16,
+      },
+      {
+        at: 0,
+        freq: 0,
+        dur: 0.12,
+        gain: 0.05,
+        noise: 1,
+        noiseFilter: { type: 'bandpass', freq: 2400, to: 5200, Q: 2.4 },
+        attack: 0.01,
+      },
+      {
+        at: 0.01,
+        freq: 320,
+        dur: 0.14,
+        wave: 'organ',
+        gain: 0.045,
+        attack: 0.004,
+        falloff: 2,
+      },
+    ],
+  },
+
+  /* ---- criticals ---------------------------------------------------- */
+
+  /** A blade critical: the hit plus a long, bright ring-out. */
+  'crit-blade': {
+    trim: 1,
+    jitter: 26,
+    voices: [
+      { at: 0, freq: 225, to: 84, dur: 0.15, wave: 'tri', gain: 0.135, attack: 0.002, falloff: 1.8 },
+      {
+        at: 0,
+        freq: 0,
+        dur: 0.055,
+        gain: 0.085,
+        noise: 1,
+        noiseFilter: { type: 'bandpass', freq: 3400, Q: 0.8 },
+      },
+      {
+        at: 0.014,
+        freq: 1520,
+        to: 2100,
+        dur: 0.26,
+        wave: 'pulse12',
+        gain: 0.036,
+        falloff: 2.1,
+        send: 0.16,
+      },
+      { at: 0, freq: 66, to: 48, dur: 0.17, wave: 'sine', gain: 0.058, falloff: 2 },
+    ],
+  },
+
+  /** An axe critical: the chop plus splintering debris. */
+  'crit-axe': {
+    trim: 1,
+    jitter: 34,
+    voices: [
+      {
+        at: 0,
+        freq: 265,
+        to: 60,
+        dur: 0.19,
+        wave: 'tri',
+        gain: 0.16,
+        attack: 0.0016,
+        falloff: 1.4,
+      },
+      {
+        at: 0,
+        freq: 0,
+        dur: 0.09,
+        gain: 0.09,
+        noise: 1,
+        noiseFilter: { type: 'bandpass', freq: 1400, Q: 0.6 },
+      },
+      {
+        at: 0.03,
+        freq: 0,
+        dur: 0.22,
+        gain: 0.035,
+        noise: 1,
+        noiseFilter: { type: 'highpass', freq: 2600, Q: 0.7 },
+        attack: 0.02,
+      },
+      { at: 0, freq: 58, to: 41, dur: 0.2, wave: 'sine', gain: 0.068, falloff: 2 },
+    ],
+  },
+
+  /** A hammer critical: the whole low end, briefly. */
+  'crit-blunt': {
+    trim: 1,
+    jitter: 24,
+    voices: [
+      {
+        at: 0,
+        freq: 110,
+        to: 38,
+        dur: 0.26,
+        wave: 'tri',
+        gain: 0.175,
+        attack: 0.005,
+        falloff: 1.3,
+      },
+      {
+        at: 0,
+        freq: 0,
+        dur: 0.08,
+        gain: 0.07,
+        noise: 1,
+        noiseFilter: { type: 'lowpass', freq: 620, Q: 0.8 },
+      },
+      { at: 0, freq: 46, to: 32, dur: 0.32, wave: 'sine', gain: 0.08, falloff: 1.8 },
+    ],
+  },
+
+  /** A dagger critical: the stab, then a second fast strike. */
+  'crit-finesse': {
+    trim: 1,
+    jitter: 45,
+    voices: [
+      {
+        at: 0,
+        freq: 0,
+        dur: 0.06,
+        gain: 0.085,
+        noise: 1,
+        noiseFilter: { type: 'bandpass', freq: 3400, to: 1800, Q: 1.5 },
+        attack: 0.0016,
+      },
+      {
+        at: 0,
+        freq: 360,
+        to: 175,
+        dur: 0.07,
+        wave: 'pulse12',
+        gain: 0.07,
+        attack: 0.0016,
+        falloff: 2.3,
+      },
+      /* The second thrust. Fast weapons crit by hitting twice. */
+      {
+        at: 0.062,
+        freq: 0,
+        dur: 0.05,
+        gain: 0.05,
+        noise: 1,
+        noiseFilter: { type: 'bandpass', freq: 3000, to: 1600, Q: 1.7 },
+        attack: 0.0016,
+      },
+      { at: 0, freq: 74, to: 56, dur: 0.11, wave: 'sine', gain: 0.045, falloff: 2.2 },
+    ],
+  },
+
+  /** A magic critical: a brighter, wider discharge with a tail. */
+  'crit-magic': {
+    trim: 1,
+    jitter: 24,
+    voices: [
+      {
+        at: 0,
+        freq: 700,
+        to: 2400,
+        dur: 0.28,
+        wave: 'tri',
+        gain: 0.09,
+        attack: 0.005,
+        falloff: 1.8,
+        send: 0.24,
+      },
+      {
+        at: 0,
+        freq: 0,
+        dur: 0.2,
+        gain: 0.065,
+        noise: 1,
+        noiseFilter: { type: 'bandpass', freq: 2200, to: 6200, Q: 2.6 },
+        attack: 0.008,
+      },
+      { at: 0.01, freq: 300, dur: 0.24, wave: 'organ', gain: 0.055, attack: 0.004, falloff: 1.7 },
+      { at: 0.05, freq: 1800, to: 2900, dur: 0.2, wave: 'sine', gain: 0.022, falloff: 2.6, send: 0.2 },
+    ],
+  },
+
+  /* ------------------------------------------------------------------ */
+  /* Taking damage, by armour                                            */
+  /* ------------------------------------------------------------------ */
+  /*
+   * The armour decides this, not the weapon, because armour is what the blow
+   * actually strikes. Rags absorb and stop; plate rings and carries the sound
+   * away. Being hit in plate should be the loudest and the *least* painful of
+   * the four — metal announces it, cloth hides it.
+   */
+
+  /** Rags and robes: a soft, absorbent thump. The damage is in the body, not the gear. */
+  'hurt-cloth': {
+    trim: 0.95,
+    jitter: 30,
+    voices: [
+      {
+        at: 0,
+        freq: 138,
+        to: 62,
+        dur: 0.18,
+        wave: 'saw',
+        gain: 0.075,
+        toneFilter: 700,
+        falloff: 1.5,
+      },
+      {
+        at: 0,
+        freq: 0,
+        dur: 0.09,
+        gain: 0.04,
+        noise: 1,
+        noiseFilter: { type: 'lowpass', freq: 780, Q: 0.9 },
+      },
+      { at: 0, freq: 56, to: 44, dur: 0.2, wave: 'sine', gain: 0.05, falloff: 2.2 },
+    ],
+  },
+
+  /** Leather: a dull slap with a little body behind it. */
+  'hurt-leather': {
+    trim: 0.95,
+    jitter: 28,
+    voices: [
+      {
+        at: 0,
+        freq: 156,
+        to: 70,
+        dur: 0.16,
+        wave: 'tri',
+        gain: 0.085,
+        toneFilter: 900,
+        falloff: 1.6,
+      },
+      {
+        at: 0,
+        freq: 0,
+        dur: 0.075,
+        gain: 0.055,
+        noise: 1,
+        noiseFilter: { type: 'bandpass', freq: 1100, Q: 1.2 },
+      },
+      { at: 0, freq: 58, to: 46, dur: 0.18, wave: 'sine', gain: 0.048, falloff: 2.2 },
+    ],
+  },
+
+  /** Chain: the blow lands on rings, which rattle after it. */
+  'hurt-chain': {
+    trim: 0.95,
+    jitter: 26,
+    voices: [
+      {
+        at: 0,
+        freq: 172,
+        to: 78,
+        dur: 0.14,
+        wave: 'tri',
+        gain: 0.08,
+        toneFilter: 1400,
+        falloff: 1.7,
+      },
+      {
+        at: 0,
+        freq: 0,
+        dur: 0.08,
+        gain: 0.06,
+        noise: 1,
+        noiseFilter: { type: 'bandpass', freq: 2200, Q: 1.1 },
+      },
+      /* The rattle. Metal that keeps moving after the strike. */
+      {
+        at: 0.04,
+        freq: 0,
+        dur: 0.16,
+        gain: 0.028,
+        noise: 1,
+        noiseFilter: { type: 'bandpass', freq: 3400, Q: 1.6 },
+        attack: 0.012,
+        send: 0.12,
+      },
+      { at: 0, freq: 60, to: 47, dur: 0.17, wave: 'sine', gain: 0.045, falloff: 2.1 },
+    ],
+  },
+
+  /** Plate: loud, ringing, and it hurts less than it sounds. */
+  'hurt-plate': {
+    trim: 1,
+    jitter: 22,
+    voices: [
+      {
+        at: 0,
+        freq: 196,
+        to: 88,
+        dur: 0.12,
+        wave: 'tri',
+        gain: 0.075,
+        toneFilter: 1800,
+        falloff: 1.8,
+      },
+      {
+        at: 0,
+        freq: 0,
+        dur: 0.07,
+        gain: 0.07,
+        noise: 1,
+        noiseFilter: { type: 'bandpass', freq: 3000, Q: 1 },
+      },
+      /* The plate itself, after the blow. A long, high, hollow ring. */
+      {
+        at: 0.012,
+        freq: 1240,
+        to: 1080,
+        dur: 0.34,
+        wave: 'pulse12',
+        gain: 0.026,
+        falloff: 2.1,
+        send: 0.22,
+      },
+      { at: 0, freq: 62, to: 50, dur: 0.15, wave: 'sine', gain: 0.04, falloff: 2.1 },
+    ],
+  },
+
   /** A magician's spell: shimmer, rising, with air around it. */
   spell: {
     trim: 0.9,

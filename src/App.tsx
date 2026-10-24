@@ -37,9 +37,41 @@ import type { MenuEntry, WirePrompt } from './api/wire';
  * subtle: claim the carrier is up 200 ms early and the player hears the modem
  * talking over the menu, which reads as a bug in the game rather than a typo in
  * a constant. It is now derived, so it cannot drift.
+ *
+ * THE BOOT RUNS ONCE, NOT ON EVERY RELOAD.
+ *
+ * The handshake is an entrance, and an entrance you sit through on every refresh
+ * stops being atmospheric and becomes a toll — worse, it is the gate on the game
+ * itself, because you cannot reach your character until it finishes.
+ *
+ * A returning player therefore starts *connected*: the boot screen is already
+ * settled and one keypress from the realm. A first-time visitor still gets the
+ * full sequence, because they have never heard it and it is the best thing here.
+ * Clearing site data brings the ceremony back, which is correct — it is genuinely
+ * new again.
  */
+const DIALED_KEY = 'ashen-wyrm.dialled.v1';
+
+function hasDialledBefore(): boolean {
+  try {
+    return localStorage.getItem(DIALED_KEY) === '1';
+  } catch {
+    /* Private mode: say no, so a player who cannot persist anything gets the
+       sequence consistently rather than skipping it at random. */
+    return false;
+  }
+}
+
+function rememberDialled(): void {
+  try {
+    localStorage.setItem(DIALED_KEY, '1');
+  } catch {
+    /* ignore */
+  }
+}
+
 export default function App() {
-  const { state, settings, key, reducedMotion, actions, handshakeMs } = useGame();
+  const { state, settings, press, key, reducedMotion, actions, handshakeMs } = useGame();
   const [skipToken, setSkipToken] = useState(0);
   const [typing, setTyping] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -54,9 +86,12 @@ export default function App() {
    * plainly, is the honest version. The answer is remembered, so this appears
    * only for people who have audio switched off.
    */
-  const [bootPhase, setBootPhase] = useState<BootPhase>(() =>
-    settings.sound ? 'idle' : 'offer',
-  );
+  const [bootPhase, setBootPhase] = useState<BootPhase>(() => {
+    /* No audio: ask, rather than promise a handshake that cannot happen. */
+    if (!settings.sound) return 'offer';
+    /* A returning player is already connected — see the note above. */
+    return hasDialledBefore() ? 'connected' : 'idle';
+  });
 
   const bootDone = bootPhase === 'connected';
   const silent = !settings.sound;
@@ -82,17 +117,40 @@ export default function App() {
    *     the mountain are four different rooms rather than one bed with different
    *     text over it.
    *
-   * The dialling phase stays in the machine room: the modem is an object in that
-   * room, and the world opens when the *carrier settles*, not when the call
-   * starts.
+   * THERE IS NO SILENT SCREEN. Every view maps to a scene, including the title
+   * and character creation, which inherit the town. A location that produced no
+   * bed would read as the audio having broken — which is exactly what players
+   * reported when the level was misapplied and every scene was inaudible.
+   *
+   * The ambience engine is also *started* here rather than only from `unlock()`.
+   * A player who reaches the realm without ever pressing a key the engine
+   * recognised — clicking "reconnect", say — would otherwise sit in silence with
+   * a perfectly healthy context.
    */
   useEffect(() => {
+    if (!settings.ambience) return;
+
     if (!bootDone) {
       sound.setAmbienceScene('machine');
       return;
     }
+
     sound.setLocation(state.view);
-  }, [bootDone, state.view]);
+  }, [bootDone, state.view, settings.ambience]);
+
+  /**
+   * The room must follow the *boot phase*, not only the final `connected` flag.
+   *
+   * During `dialing` the player is still in the machine room — the modem is an
+   * object in that room, and the world should not open until the carrier
+   * settles. Watching `bootPhase` instead of `bootDone` keeps the ambience alive
+   * through the whole sequence rather than leaving the boot idle screen silent.
+   */
+  useEffect(() => {
+    if (!settings.ambience) return;
+    if (bootDone) return;
+    sound.setAmbienceScene('machine');
+  }, [bootPhase, bootDone, settings.ambience]);
 
   /**
    * Keep the narrative pinned to the bottom.
@@ -179,6 +237,9 @@ export default function App() {
       carrierTimer.current = null;
     }
     actions.hangUp();
+    /* The call happened. Future visits start connected rather than paying the
+       same toll again. */
+    rememberDialled();
     setBootPhase('connected');
   }, [actions]);
 
@@ -222,6 +283,20 @@ export default function App() {
 
       /* Never trap the browser's own tab navigation. */
       if (e.key === 'Tab') return;
+
+      /*
+       * THE CLICK COMES FIRST, BEFORE ANY BRANCH CAN SWALLOW THE KEY.
+       *
+       * Every branch below can ignore this keypress — the boot phase owns the
+       * keyboard, the typewriter skip returns early, the busy window drops input,
+       * offline retries without acting. All of those were silent as well, because
+       * the click lived inside the server-send path. Players mash keys precisely
+       * during a typewriter reveal, so the keyboard felt dead most of the time it
+       * was being hammered.
+       *
+       * A key going down is physical whether or not the game has a use for it.
+       */
+      press(e.key === ' ' || e.key === 'Enter' ? 'enter' : e.key);
 
       /* ---- the boot sequence owns the keyboard until it settles ---- */
       if (bootPhase !== 'connected') {
@@ -361,6 +436,7 @@ export default function App() {
           typing={typing}
           busy={state.busy}
           connection={state.connection}
+          audioOff={bootDone && !settings.sound}
         />
       </div>
 
@@ -372,6 +448,19 @@ export default function App() {
           /* A volume step is meaningless without hearing it. */
           onPreviewSound={() => sound.play('hit')}
           onClose={() => setShowSettings(false)}
+          /*
+           * Read the engine's live state at render time rather than mirroring it
+           * into React state. The panel only mounts on demand, so mounting IS the
+           * refresh: opening it after a keypress shows the truth, which is
+           * exactly when a player would look at it.
+           */
+          audio={{
+            state: sound.state,
+            sampleRate: sound.sampleRate,
+            unlocked: sound.unlocked,
+            ambienceLive: sound.ambienceLive,
+          }}
+          onTestAllSounds={() => sound.testAll()}
         />
       )}
 
@@ -410,6 +499,7 @@ function Footer({
   typing,
   busy,
   connection,
+  audioOff,
 }: {
   prompt: WirePrompt | null;
   menu: MenuEntry[] | null;
@@ -417,6 +507,8 @@ function Footer({
   typing: boolean;
   busy: boolean;
   connection: string;
+  /** Sound is switched off. Surfaced so silence is never a mystery. */
+  audioOff: boolean;
 }) {
   const clock = useClock();
 
@@ -429,14 +521,31 @@ function Footer({
           <span className="t-dim">transmitting…</span>
         ) : view === 'boot' ? (
           <span className="t-dim">dialling in</span>
-        ) : prompt ? (
-          <PromptBar prompt={prompt} />
-        ) : menu ? (
-          <MenuBar entries={menu} />
-        ) : view === 'title' ? (
-          <span className="t-dim">[N] new · [1-9] load</span>
         ) : (
-          <span className="t-dim">[ESC] back</span>
+          <>
+            {prompt ? (
+              <PromptBar prompt={prompt} />
+            ) : menu ? (
+              <MenuBar entries={menu} />
+            ) : view === 'title' ? (
+              <span className="t-dim">[N] new · [1-9] load</span>
+            ) : (
+              <span className="t-dim">[ESC] back</span>
+            )}
+            {/*
+              A permanent, quiet reminder that audio is off.
+
+              The alternative is a player concluding the game is broken, opening
+              the console, and finding nothing — because nothing is wrong. One
+              visible word costs nothing and answers the question before it is
+              asked.
+            */}
+            {audioOff && (
+              <span className="audio-off t-gold" title="Sound is off — open SET">
+                {'  ·  '}SOUND OFF
+              </span>
+            )}
+          </>
         )}
       </div>
 

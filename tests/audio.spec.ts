@@ -216,11 +216,35 @@ describe('SoundEngine — the first-gesture race', () => {
     await Promise.resolve();
   });
 
-  it('setEnabled(true) unlocks in the same tick', async () => {
+  /**
+   * `setEnabled(true)` does NOT itself build a context.
+   *
+   * This test used to assert the opposite, and that assertion was the bug. The
+   * settings effect calls `setEnabled` at mount — before any user gesture — so
+   * constructing a context there hands back one in the `suspended` state that
+   * nothing ever resumes. That is precisely how this game ended up silent: a
+   * context existed, so every guard that checked "do we have audio?" said yes,
+   * while the browser had never actually started it.
+   *
+   * The context is now created only by `unlock()`, which runs from a real
+   * keypress or click. Enabling sound records the preference and leaves
+   * construction to the gesture.
+   */
+  it('does not build a context outside a gesture', async () => {
     installFakeContext();
     const { sound } = await freshEngine();
 
     sound.setEnabled(true);
+
+    expect(sound.isEnabled).toBe(true);
+    expect(sound.unlocked).toBe(false);
+  });
+
+  it('unlocks on an explicit gesture', async () => {
+    installFakeContext();
+    const { sound } = await freshEngine();
+
+    sound.unlock();
     expect(sound.unlocked).toBe(true);
   });
 
@@ -391,6 +415,43 @@ describe('the sound catalogue', () => {
     expect(DESIGNS.hurt.voices.length).toBeGreaterThanOrEqual(2);
     expect(DESIGNS.level.voices.length).toBeGreaterThanOrEqual(5);
     expect(DESIGNS.wyrm.voices.length).toBeGreaterThanOrEqual(3);
+  });
+
+  /**
+   * THE ROOM MUST NOT DROWN THE KEYBOARD — and must not vanish either.
+   *
+   * The history here is a lesson in comparing the wrong two numbers. The bed was
+   * once 0.85 and drowned the keys; then it was dropped to 0.05 while the level
+   * was *also* applied a second time inside `ambience.ts`, leaving it near
+   * 0.0005 — utterly silent. Both failures passed a naive check, because neither
+   * was measuring the thing that reaches the bus.
+   *
+   * Measured properly:
+   *
+   *   bed   every layer is continuous, so summed gain × AMBIENCE_LEVEL really is
+   *         the level it contributes at any instant.
+   *   key   the voices are offset in time (the release lands 55 ms after the
+   *         press), so the *loudest single voice* is the right measure; summing
+   *         a stack whose parts never coincide overstates the click.
+   *
+   * The requirement is a ratio, not an absolute: audible, but subordinate.
+   */
+  it('keeps the room tone under a keypress, and audible', async () => {
+    const { DESIGNS } = await import('../src/audio/catalogue');
+    const { AMBIENCE_LEVEL, loudestBedSum } = await import('../src/audio/scenes');
+
+    const keyPeak = Math.max(...DESIGNS.key.voices.map((v) => v.gain)) * (DESIGNS.key.trim ?? 1);
+    const bedPeak = loudestBedSum() * AMBIENCE_LEVEL;
+
+    /* The room must be quieter than a single keystroke. */
+    expect(bedPeak).toBeLessThan(keyPeak);
+
+    /*
+     * But not so quiet it disappears. Two thirds of a keypress is the floor:
+     * below that the bed vanishes under any effect and the player hears nothing
+     * at all — which is precisely the bug that produced this test.
+     */
+    expect(bedPeak).toBeGreaterThan(keyPeak * 0.6);
   });
 
   it('gives impacts a percussive envelope and pads a sustaining one', async () => {
@@ -627,7 +688,7 @@ describe('cue scoring', () => {
   });
 
   it('collapses a whole fight to one impact plus the rare events', async () => {
-    const { soundsForBatch } = await import('../src/audio/cues');
+    const { soundsForBatch, baseOf } = await import('../src/audio/cues');
 
     const cues = soundsForBatch([
       line(1, 'You hit it for 12 damage.'),
@@ -636,14 +697,25 @@ describe('cue scoring', () => {
       line(4, '+150 experience  +90 gold'),
     ]);
 
-    /* Four lines, but the ear needs one impact, not four. */
-    expect(cues.filter((c) => c === 'hit' || c === 'hurt' || c === 'crit')).toHaveLength(1);
-    expect(cues).toContain('crit');
+    /*
+     * Four lines, but the ear needs one impact, not four.
+     *
+     * Compared by *base* family, because combat sounds are now loadout-aware:
+     * the winner is `crit-blade` or `crit-plate` rather than a bare `crit`. The
+     * property being tested has not changed — one impact per exchange — only the
+     * name of the sound that represents it.
+     */
+    const impacts = cues.filter((c) => {
+      const base = baseOf(c);
+      return base === 'hit' || base === 'hurt' || base === 'crit';
+    });
+    expect(impacts).toHaveLength(1);
+    expect(baseOf(impacts[0])).toBe('crit');
     expect(cues).toContain('loot');
   });
 
   it('puts the award before the blow that earned it', async () => {
-    const { soundsForBatch } = await import('../src/audio/cues');
+    const { soundsForBatch, baseOf } = await import('../src/audio/cues');
 
     const cues = soundsForBatch([
       line(1, 'You hit it for 12 damage.'),
@@ -651,7 +723,7 @@ describe('cue scoring', () => {
     ]);
 
     expect(cues[0]).toBe('level');
-    expect(cues[cues.length - 1]).toBe('hit');
+    expect(baseOf(cues[cues.length - 1])).toBe('hit');
   });
 
   it('maps keys by intent', async () => {
@@ -659,6 +731,8 @@ describe('cue scoring', () => {
 
     expect(soundForKey('Enter')).toBe('select');
     expect(soundForKey('Escape')).toBe('back');
+    /* Back is `b` now, and it should sound like leaving, not like typing. */
+    expect(soundForKey('b')).toBe('back');
     expect(soundForKey('f')).toBe('key');
   });
 });

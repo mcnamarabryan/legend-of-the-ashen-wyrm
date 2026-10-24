@@ -104,6 +104,43 @@ export const KEY: SoundDesign = {
       attack: 0.001,
     },
 
+    /*
+     * THE AUDIBLE CORE — and the reason the keyboard was hard to hear.
+     *
+     * The original stack put its weight at 152 Hz and its edge at 3.4 kHz. Both
+     * are correct for a real board and both are exactly what small speakers
+     * discard: laptop and phone drivers roll off below ~200 Hz and above ~3 kHz.
+     * The keystroke was therefore present and inaudible at the same time, which
+     * reads as "sound isn't working" rather than as a mixing problem.
+     *
+     * This layer is the cap's body in the 300–900 Hz band, where small speakers
+     * are most efficient. It is not a new effect; it is the same physical event
+     * modelled where it can actually be heard.
+     */
+    {
+      at: 0.003,
+      freq: 640,
+      to: 410,
+      dur: 0.042,
+      wave: 'tri',
+      gain: 0.042,
+      attack: 0.001,
+      falloff: 2.4,
+    },
+    /*
+     * A short woody band under that, to keep the knock from reading as a beep.
+     */
+    {
+      at: 0.003,
+      freq: 0,
+      dur: 0.026,
+      gain: 0.03,
+      noise: 1,
+      noiseFilter: { type: 'bandpass', freq: 550, Q: 1.4 },
+      attack: 0.001,
+      falloff: 2.6,
+    },
+
     /* ---- 3. the plate ring -------------------------------------- */
     /*
      * THE LAYER THAT SELLS IT. A pitched partial at the plate's resonant
@@ -115,13 +152,16 @@ export const KEY: SoundDesign = {
      * someone else typing in another building. The body comes from the frequency
      * and the decay — not from reverb. The catalogue's "keys stay dry" rule is
      * not decoration; it is the whole reason a keypress feels tactile.
+     *
+     * Raised from 0.011: it sits at 620 Hz, squarely in the band a small speaker
+     * reproduces well, so it was the cheapest audible gain available.
      */
     {
       at: 0.006,
       freq: 620,
-      dur: 0.065,
+      dur: 0.07,
       wave: 'tri',
-      gain: 0.011,
+      gain: 0.028,
       attack: 0.003,
       falloff: 1.8,
     },
@@ -207,12 +247,33 @@ export const KEY: SoundDesign = {
         noiseFilter: { type: 'bandpass', freq: 780, Q: 2.6 },
         attack: 0.001,
       },
+      /* The audible core — see the note on the primary stack. */
+      {
+        at: 0.004,
+        freq: 560,
+        to: 360,
+        dur: 0.046,
+        wave: 'tri',
+        gain: 0.044,
+        attack: 0.0012,
+        falloff: 2.2,
+      },
+      {
+        at: 0.004,
+        freq: 0,
+        dur: 0.028,
+        gain: 0.032,
+        noise: 1,
+        noiseFilter: { type: 'bandpass', freq: 480, Q: 1.2 },
+        attack: 0.001,
+        falloff: 2.6,
+      },
       {
         at: 0.007,
         freq: 540,
         dur: 0.075,
         wave: 'tri',
-        gain: 0.012,
+        gain: 0.026,
         attack: 0.004,
         falloff: 1.7,
       },
@@ -261,12 +322,33 @@ export const KEY: SoundDesign = {
         attack: 0.001,
         falloff: 2.4,
       },
+      /* The audible core — see the note on the primary stack. */
+      {
+        at: 0.002,
+        freq: 700,
+        to: 460,
+        dur: 0.038,
+        wave: 'tri',
+        gain: 0.04,
+        attack: 0.0008,
+        falloff: 2.6,
+      },
+      {
+        at: 0.002,
+        freq: 0,
+        dur: 0.022,
+        gain: 0.028,
+        noise: 1,
+        noiseFilter: { type: 'bandpass', freq: 620, Q: 1.5 },
+        attack: 0.0008,
+        falloff: 2.8,
+      },
       {
         at: 0.006,
         freq: 720,
         dur: 0.055,
         wave: 'tri',
-        gain: 0.01,
+        gain: 0.024,
         attack: 0.003,
         falloff: 1.9,
       },

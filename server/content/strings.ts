@@ -64,7 +64,14 @@ export const hub = {
   menu: {
     f: 'Fight',
     i: 'Inn',
-    b: 'Bank',
+    /*
+     * Bank is `k`.
+     *
+     * `b` became Back on every screen, and one key cannot mean two things in the
+     * square. Back won because it is used everywhere; Bank moved because it is
+     * used here.
+     */
+    k: 'Bank',
     s: 'Shop',
     h: 'Healer',
     c: 'Character',
@@ -454,9 +461,9 @@ export const errors = {
 export const help = {
   header: 'KEYBOARD',
   lines: [
-    '[F] Forest      [I] Inn         [B] Bank      [S] Shop',
+    '[F] Forest      [I] Inn         [K] Bank      [S] Shop',
     '[H] Healer      [C] Character   [W] Who\u2019s Who [P] Attack',
-    '[D] Wyrm        [Q] Quit        [?] This screen [ESC] Back',
+    '[D] Wyrm        [Q] Quit        [?] This screen [B] Back',
     '[Y] Yes         [N] No          [1-9] Select an item',
     '',
     'Any key skips the typewriter. Menus take a single keypress — no Enter.',

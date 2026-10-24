@@ -14,6 +14,21 @@ export default defineConfig({
   server: {
     host: true,
     port: 5173,
+    /*
+     * DO NOT WATCH THE DATABASE.
+     *
+     * The realm writes `data/realm.sqlite` on every command, by rename — which
+     * to a file watcher looks like a file vanishing and reappearing several
+     * times a second. Vite's watcher followed it and crashed the dev server with
+     * `EIO: dirent not found, lstat 'data/realm.sqlite'`, taking the whole
+     * client down mid-session.
+     *
+     * The client never reads that file, so ignoring it costs nothing and the
+     * previous entry (`public/`) is kept.
+     */
+    watch: {
+      ignored: ['**/data/**', '**/*.sqlite', '**/*.sqlite.tmp'],
+    },
     proxy: {
       '/api': {
         target: 'http://127.0.0.1:8787',

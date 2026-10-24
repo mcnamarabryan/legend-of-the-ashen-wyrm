@@ -3,7 +3,7 @@ import { openSession, sendKey, forgetToken } from '../api/client';
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { clientReducer, initialClientState, type ClientState, type ClientLine } from './client';
 import { sound } from '../audio/SoundEngine';
-import { soundsForBatch, soundForKey } from '../audio/cues';
+import { soundsForBatch, soundForKey, profileFromLoadout, DEFAULT_PROFILE } from '../audio/cues';
 
 /**
  * useGame — the browser's half of the conversation.
@@ -39,7 +39,15 @@ const defaultSettings: Settings = {
   grain: true,
   curvature: true,
   sound: true,
-  volume: 0.8,
+  /*
+   * MAX, not 0.8.
+   *
+   * The engine's steps are 0.3 / 0.55 / 0.8 / 1. Starting at 0.8 put ordinary
+   * effects near −30 dBFS — audible on headphones, inaudible on a laptop. A
+   * player who finds it too loud steps down in one click; a player who cannot
+   * hear it assumes the game is broken and leaves.
+   */
+  volume: 1,
   ambience: true,
   typewriterMs: 18,
   contrastBoost: false,
@@ -59,6 +67,21 @@ export interface Game {
   state: ClientState;
   settings: Settings;
   reducedMotion: boolean;
+  /**
+   * Acknowledge a physical keypress: arm audio and make the click.
+   *
+   * Separate from `key()` because the two are not the same event. `key()` sends
+   * the press to the server; `press()` reflects that a key went *down*. Most
+   * presses in this game never reach the server — they skip a running
+   * typewriter, or land while a request is in flight — and those presses used to
+   * be completely silent, because the click was played inside `key()`.
+   *
+   * That was the "I can't hear the keyboard clicks" bug. The keyboard was fine;
+   * it was being muted for the majority of keystrokes by the input router. A
+   * keypress is a physical event regardless of whether the game wants it, so the
+   * click belongs to the gesture, not to the command.
+   */
+  press(raw: string): void;
   key(k: string): void;
   actions: {
     setSettings(patch: Partial<Settings>): void;
@@ -138,13 +161,30 @@ export function useGame(): Game {
   }, []);
 
   /**
-   * Browsers will not start audio without a gesture. Every gameplay keypress
-   * is a gesture, so the first one arms the engine. Doing it here rather than
-   * in a component keeps the policy in one place.
+   * Arm the audio engine. Safe to call on every keypress.
+   *
+   * THIS FUNCTION WAS THE REASON THE WHOLE GAME WAS SILENT.
+   *
+   * It used to read:
+   *
+   *     if (sound.unlocked) return;   // "already have a context, nothing to do"
+   *     sound.unlock();
+   *
+   * `unlocked` means "an AudioContext object exists", not "the context is
+   * running". On mount, the settings effect calls `setEnabled` and
+   * `setAmbienceEnabled`, which construct the context *before any user gesture* —
+   * so the browser hands back one in the `suspended` state. From that moment
+   * `unlocked` was true, this function returned immediately, `resume()` was
+   * never called, and every scheduled sound queued into a context that never
+   * started. The modem, the clicks, the hits: all present in the graph, all
+   * inaudible.
+   *
+   * Calling `unlock()` unconditionally fixes it, because `unlock()` is already
+   * idempotent and already resumes a suspended context. The guard was not
+   * protecting anything — it was the bug.
    */
   const ensureAudio = useCallback(() => {
     if (!settings.sound) return;
-    if (sound.unlocked) return;
     sound.unlock();
   }, [settings.sound]);
 
@@ -175,11 +215,22 @@ export function useGame(): Game {
 
     scoredId.current = fresh[fresh.length - 1].id;
 
-    /* Nothing to do if sound is off — and nothing to do before the player has
-       gestured, because the context will not be running yet. */
-    if (!settings.sound || !sound.unlocked) return;
+    if (!settings.sound) return;
 
-    const cues = soundsForBatch(fresh);
+    /*
+     * The player's kit decides which impact sound plays.
+     *
+     * Read from the header, because the client holds no state of its own:
+     * `weaponId` and `armorId` are two short strings the server already sends,
+     * mapped here onto this module's own sound families. A war hammer and a
+     * dagger therefore genuinely sound different, and the mapping stays purely
+     * a presentation concern.
+     */
+    const profile = state.character
+      ? profileFromLoadout(state.character.weaponId, state.character.armorId)
+      : DEFAULT_PROFILE;
+
+    const cues = soundsForBatch(fresh, profile);
     cues.forEach((cue, i) => {
       /* Stagger, so a level-up and a sword hit do not stack into mush. */
       if (i === 0) {
@@ -188,16 +239,40 @@ export function useGame(): Game {
       }
       window.setTimeout(() => sound.play(cue), 140 * i);
     });
-  }, [state.log, settings.sound]);
+  }, [state.log, state.character, settings.sound]);
+
+  /* ---- a physical keypress ---------------------------------------- */
+
+  /**
+   * Arm the audio and make the click. Called for EVERY keydown.
+   *
+   * This is deliberately separate from `key()`. The click used to live inside
+   * `key()`, which meant it only fired on presses that were forwarded to the
+   * server — so the typewriter-skip press, the presses swallowed while a request
+   * was in flight, and the offline-retry press were all silent. Players mash keys
+   * precisely in those moments, which made the keyboard feel broken.
+   *
+   * A key going down is a physical fact. The sound belongs to the gesture, not to
+   * whether the game has a use for it.
+   */
+  const press = useCallback(
+    (raw: string) => {
+      ensureAudio();
+      sound.play(soundForKey(raw));
+    },
+    [ensureAudio],
+  );
 
   /* ---- the single mutation path --------------------------------- */
   const key = useCallback(
     (raw: string) => {
       if (inFlight.current) return;
 
-      /* Every key is a gesture. Take the chance to arm audio if allowed. */
+      /* Keep the unlock here as a safety net for callers that bypass `press()`
+         (the boot screen's dial gesture among them). The click itself is NOT
+         played here — `press()` already made it for this physical keydown, and
+         firing it twice would double the transient. */
       ensureAudio();
-      sound.play(soundForKey(raw));
 
       /* Send the key as typed. The SERVER decides whether case matters — it
          lowercases for command matching but preserves case for typed names, so
@@ -249,18 +324,26 @@ export function useGame(): Game {
 
       dial: () => {
         /*
-         * Do NOT gate on `sound.isEnabled`.
+         * UNLOCK FIRST — this was the "modem sometimes doesn't play" bug.
          *
-         * That flag is only synced by a useEffect after render. `acceptSound`
-         * calls setSettings({sound:true}) and then dial() in the same tick, so
-         * the effect has not run yet, isEnabled is still false, and the
-         * handshake never starts. That is precisely the "no modem sound" bug.
+         * `setEnabled(true)` deliberately does NOT create an AudioContext; it
+         * only records the preference, because creating one outside a gesture
+         * yields a suspended context that nothing ever resumes. But
+         * `handshake()` returns a silent `{ duration: 0 }` no-op when no context
+         * exists yet.
          *
-         * The engine is told directly instead. Unlocking always enables it: the
-         * call itself is the gesture, and a caller asking to dial has already
-         * decided it wants audio.
+         * So any path reaching `dial()` without first going through `press()`
+         * got silence: clicking the dial button with a mouse, or the boot
+         * screen's own button, both bypass the keydown handler entirely.
+         * Keyboard users were fine because `press()` unlocks on the way in —
+         * which is exactly why it looked intermittent rather than broken.
+         *
+         * `unlock()` is idempotent and resumes a suspended context, so calling
+         * it here costs nothing when the gesture already happened.
          */
+        sound.unlock();
         sound.setEnabled(true);
+
         hangUpRef.current?.();
         const handle = sound.handshake();
         hangUpRef.current = handle;
@@ -286,5 +369,5 @@ export function useGame(): Game {
     [connect],
   );
 
-  return { state, settings, reducedMotion, key, actions, handshakeMs };
+  return { state, settings, reducedMotion, press, key, actions, handshakeMs };
 }

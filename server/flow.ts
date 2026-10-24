@@ -342,7 +342,7 @@ function shopPage(c: Character, tab: ShopTab): CombatLine[] {
     line(shopMsg.wow(itemById(c.weaponId).power, itemById(c.armorId).power), 'dim'),
     line(
       `${tab === 'weapon' ? '{dim}[W] Weapons{/} {bright}[A] Armor{/}' : '{bright}[W] Weapons{/} {dim}[A] Armor{/}'}` +
-        `   {dim}[X] Sell weapon   [Z] Sell armor   [ESC] Leave{/}`,
+        `   {dim}[X] Sell weapon   [Z] Sell armor   [B] Leave{/}`,
       'dim',
     ),
   );
@@ -410,7 +410,7 @@ export function openBank(ctx: FlowContext): Step {
     lines: [
       line(bankMsg.greet[Math.floor(ctx.rng() * bankMsg.greet.length)]),
       line(bankMsg.balance(c.gold, c.banked, gameRules.bank.cap)),
-      line('{dim}[D] Deposit all   [W] Withdraw all   [ESC] Leave{/}', 'dim'),
+      line('{dim}[D] Deposit all   [W] Withdraw all   [B] Back{/}', 'dim'),
       line(bankMsg.capNote, 'dim'),
     ],
     character: c,
@@ -486,17 +486,21 @@ export function openInn(ctx: FlowContext): Step {
   if (c.wrenStage >= 5) {
     lines.push(line('{dim}Wren is not behind the bar tonight.{/}', 'dim'));
   } else {
-    lines.push(line('{dim}[T] Talk to Wren    [ESC] Leave the inn{/}', 'dim'));
+    lines.push(line('{dim}[T] Talk to Wren    [B] Back{/}', 'dim'));
   }
 
   return {
     lines,
     character: c,
     view: { kind: 'inn' },
-    prompt:
-      c.wrenStage >= 5
-        ? null
-        : { label: 'Talk to Wren?', keys: ['t', 'escape'], hint: 'ESC leaves the inn' },
+    /*
+     * `b` is in the key list and the hint no longer repeats it.
+     *
+     * It used to be `keys: ['t', 'escape'], hint: 'ESC leaves the inn'`, naming
+     * the exit twice in two notations — precisely the duplication the footer
+     * exists to prevent.
+     */
+    prompt: c.wrenStage >= 5 ? null : { label: 'Talk to Wren', keys: ['t', 'b'] },
   };
 }
 
@@ -570,12 +574,8 @@ export function talkToWren(ctx: FlowContext): Step {
 
   if (view.kind === 'inn') {
     lines.push(line(`{dim}Wren: stage ${next.wrenStage} of 5.{/}`, 'dim'));
-    lines.push(line('{dim}[T] Keep talking    [ESC] Back to the square{/}', 'dim'));
-    prompt = {
-      label: 'Talk to Wren again?',
-      keys: ['t', 'escape'],
-      hint: 'ESC leaves the inn',
-    };
+    lines.push(line('{dim}[T] Keep talking    [B] Back to the square{/}', 'dim'));
+    prompt = { label: 'Talk to Wren again?', keys: ['t', 'b'] };
   }
 
   return { lines, character: next, view, prompt };

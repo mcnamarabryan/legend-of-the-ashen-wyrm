@@ -45,7 +45,7 @@ export function EntryField({ entry, busy }: EntryFieldProps) {
       <div className="term-line t-dim entry-label">{entry.label}</div>
 
       <div className="term-line entry-input" aria-hidden="true">
-        <span className="entry-prompt t-dim">&gt;&nbsp;</span>
+        <span className="entry-prompt t-dim">{'>'}{'\u00a0'}</span>
         {value.length > 0 ? (
           <span className="t-bright">{value}</span>
         ) : (

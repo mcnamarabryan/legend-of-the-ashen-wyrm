@@ -332,6 +332,44 @@ export const SCENES: Record<AmbienceScene, SceneSpec> = {
 export const SCENE_IDS = Object.keys(SCENES) as AmbienceScene[];
 
 /**
+ * How loud the room tone sits, as a fraction of the master bus.
+ *
+ * Lives here rather than in `SoundEngine` so it can be asserted against the
+ * sound catalogue without constructing an AudioContext — the number is a mixing
+ * decision, and the reason the keyboard was once inaudible, so it deserves to be
+ * testable.
+ *
+ * THE HISTORY MATTERS, because this number has been wrong twice.
+ *
+ * It was 0.85, which put ~0.18 of wind on the bus against a keyclick peaking at
+ * 0.083: the room was more than twice as loud as the thing the player was doing.
+ * Dropping it to 0.05 fixed that and broke the opposite way — `ambience.ts` was
+ * *also* ramping its own scene envelope to this value, so the level applied
+ * twice and the beds arrived at 0.05 × 0.05 × 0.21 ≈ 0.0005. Audible to nobody.
+ *
+ * With the double-attenuation gone, one honest multiplier does the whole job.
+ * 0.2 puts the loudest bed (the forest, ~0.21 summed) at ~0.042 against a
+ * keypress peak of 0.046: plainly audible in a quiet room, never competing with
+ * the thing the player is doing. The mix test enforces both halves of that.
+ */
+export const AMBIENCE_LEVEL = 0.2;
+
+/** The summed gain of a scene's continuous bed, before AMBIENCE_LEVEL. */
+export function bedSum(scene: AmbienceScene): number {
+  return SCENES[scene].bed.reduce((sum, layer) => sum + layer.gain, 0);
+}
+
+/**
+ * The loudest bed of any scene.
+ *
+ * Used by the mix test: the *worst case* room must still sit under a keypress,
+ * not merely the average one.
+ */
+export function loudestBedSum(): number {
+  return Math.max(...SCENE_IDS.map(bedSum));
+}
+
+/**
  * Which scene a game location maps to.
  *
  * Locations in the game are cheap and numerous; scenes are expensive and few.
